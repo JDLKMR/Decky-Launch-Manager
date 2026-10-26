@@ -15,7 +15,7 @@ Combines my previous ROM Manager, Script Assigner and Profile Launcher plugins, 
 - Scan the library for games with matching ROM profile and shell script paths, and clear them from the dropdown lists if desired
 - Exclude specific shell script-bound games via `.sh` filename keywords/patterns (applies to both the scan and the launch prompt)
 
-### Launch prompt
+### Launch Prompt
 When you launch a game whose Target or Launch Options point at a `.sh` script, a prompt lets you pick which profile to launch with. This expects the script to use "profiles": it does different things depending on the value of a variable (default `PROFILE`). The list of profiles is read from the script's own table every time:
 
 ```
