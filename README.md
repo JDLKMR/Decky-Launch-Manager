@@ -1,8 +1,6 @@
 # Decky Launch Manager
 A Decky Loader plugin that can assign launch paths/arguments to games according to configured profiles, assign shell script file paths, and prompt for a profile when a script-bound game (or a game with shortcut profiles) is launched.
 
-Combines my previous ROM Manager, Script Assigner and Profile Launcher plugins, as they all deal with how a game launches. **Uninstall the standalone Profile Launcher after installing this**, or both will try to intercept launches. On first run, Launch Manager imports the settings of its previous name, Launch Editor (if present), and Profile Launcher's settings (script variable, prompting defaults, backup toggle, per-game settings and shortcut profiles, and exclusions) if its settings folder is still there.
-
 ## Features
 - Configure "console profiles" with different launch options and arguments
 - Add a new non-Steam game and automatically apply a profile's launch options/arguments to it
