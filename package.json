@@ -1,0 +1,32 @@
+{
+  "name": "launch-manager",
+  "version": "1.0.0",
+  "description": "Add ROM launch options, assign launch scripts, add shortcut profiles, or clear launch options for Steam and non-Steam games from one game-page button, and launch games with a profile prompt.",
+  "type": "module",
+  "scripts": {
+    "build": "rollup -c",
+    "watch": "rollup -c -w"
+  },
+  "devDependencies": {
+    "@decky/rollup": "^1.0.1",
+    "@decky/api": "^1.1.2",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@types/webpack": "^5.28.5",
+    "rollup": "^4.18.0",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "@decky/ui": "^4.7.2",
+    "react-icons": "^5.3.0"
+  },
+  "pnpm": {
+    "peerDependencyRules": {
+      "ignoreMissing": [
+        "react",
+        "react-dom"
+      ]
+    }
+  },
+  "license": "MIT"
+}
