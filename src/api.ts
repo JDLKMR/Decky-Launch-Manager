@@ -8,6 +8,8 @@ import type {
   ScriptFile,
   ScriptInfo,
   Settings,
+  SgdbResult,
+  SgdbSearchResult,
   Source,
   WriteResult,
 } from "./types";
@@ -25,6 +27,14 @@ function settingsCall<A extends any[]>(name: string) {
 export const getSettings = settingsCall<[]>("get_settings");
 export const setBrowserDir = settingsCall<[path: string]>("set_browser_dir");
 export const setShowGameButton = settingsCall<[value: boolean]>("set_show_game_button");
+export const setSgdbArt = settingsCall<[value: boolean]>("set_sgdb_art");
+export const setSgdbKey = settingsCall<[key: string]>("set_sgdb_key");
+/** `sgdbId` 0 = match `name` on SteamGridDB automatically; otherwise use that SteamGridDB game. */
+export const fetchSgdbArt = callable<[name: string, appid: number, sgdbId: number, sgdbTitle: string], SgdbResult>(
+  "fetch_sgdb_art",
+);
+export const searchSgdbGames = callable<[query: string], SgdbSearchResult>("search_sgdb_games");
+export const setRomCollections = settingsCall<[value: boolean]>("set_rom_collections");
 export const setPromptOptions = settingsCall<[patch: Partial<Pick<Settings, "variable" | "askByDefault" | "backup">>]>(
   "set_prompt_options",
 );

@@ -73,6 +73,29 @@ function extractRom(template: string, launch: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Profiles the library scan cannot tell apart (same Target, Launch options and file types, like
+ * GameCube and Wii) are listed as one group in the ROM Games list, named after all of them
+ * ("GameCube/Wii"). Display only: they stay separate profiles everywhere else. Maps each profile's
+ * id to the group name its games are listed under (its own name when it has no twin).
+ */
+export function groupLabels(profiles: Profile[]): Map<string, string> {
+  const twins = new Map<string, Profile[]>();
+  for (const p of profiles) {
+    const key = [canon(p.target), canon(p.launchOptions), [...p.fileTypes].sort().join(",")].join("\n");
+    twins.set(key, [...(twins.get(key) ?? []), p]);
+  }
+  const labels = new Map<string, string>();
+  for (const group of twins.values()) {
+    const label = group
+      .map((p) => p.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }))
+      .join("/");
+    for (const p of group) labels.set(p.id, label);
+  }
+  return labels;
+}
+
 export interface RomMatch {
   profile: Profile;
   rom: string;

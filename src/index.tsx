@@ -1,6 +1,6 @@
 import { definePlugin, routerHook } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
-import { FaChevronDown, FaChevronRight, FaEdit, FaTerminal, FaTrash, FaUserCog } from "react-icons/fa";
+import { FaChevronDown, FaChevronRight, FaEdit, FaEye, FaEyeSlash, FaTerminal, FaTrash, FaUserCog } from "react-icons/fa";
 import {
   addDirectory,
   applyScan,
@@ -9,6 +9,9 @@ import {
   setBrowserDir,
   setDirectorySubdirs,
   setPromptOptions,
+  setRomCollections,
+  setSgdbArt,
+  setSgdbKey,
   setShowGameButton,
 } from "./api";
 import { confirmClear, confirmRemoveProfiles, startNewRomFlow, startRomFlow, startScriptFlow } from "./flow";
@@ -30,7 +33,7 @@ import {
   pendingReturnTarget,
   rememberGameSettingsOpened,
 } from "./panelMemory";
-import { describeFileTypes } from "./profiles";
+import { describeFileTypes, groupLabels } from "./profiles";
 import { scanLibrary } from "./scan";
 import { basename, getGameByAppId, getInstalledGames, liveName } from "./steam";
 import { subscribe } from "./store";
@@ -81,7 +84,7 @@ interface Row {
   sub: string;
   kind: GameKind;
   list: ListKind;
-  /** ROM games: the console profile group it sits under. */
+  /** ROM games: the ROM profile group it sits under. */
   group?: string;
   /** In the script list only because it has shortcut profiles (no script of its own). */
   linkOnly?: boolean;
@@ -137,7 +140,7 @@ function Content() {
   const [romOpen, setRomOpen] = useState(() => pendingReturnTarget()?.list === "rom");
   const [scriptOpen, setScriptOpen] = useState(() => pendingReturnTarget()?.list === "script");
   const [profilesOpen, setProfilesOpen] = useState(false);
-  // Console profile groups under "ROM Games" that are expanded (all start collapsed).
+  // ROM profile groups under "ROM Games" that are expanded (all start collapsed).
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
     const t = pendingReturnTarget();
     return new Set(t?.list === "rom" && t.group ? [t.group] : []);
@@ -148,6 +151,12 @@ function Content() {
   const settingsButtons = useRef(new Map<number, HTMLDivElement>());
   // What's typed in the script variable box (null = show the saved value).
   const [varText, setVarText] = useState<string | null>(null);
+  // Same for the SteamGridDB API key, which is hidden unless the eye button is pressed (and always starts hidden).
+  const [keyText, setKeyText] = useState<string | null>(null);
+  const [showKey, setShowKey] = useState(false);
+  const keyBox = useRef<HTMLDivElement>(null);
+  const eyeBox = useRef<HTMLDivElement>(null);
+  const keySeparator = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getSettings().then(setS);
@@ -175,6 +184,41 @@ function Content() {
     restore();
     return onGameSettingsClosed(restore);
   }, []);
+
+  // The API key row. Runs after every render, because Steam can rebuild the field at any time.
+  useEffect(() => {
+    const input = keyBox.current?.querySelector("input");
+    // Steam's text field takes no password option here, so the characters are hidden on the input itself.
+    input?.style.setProperty("-webkit-text-security", showKey ? "none" : "disc");
+
+    // Line the eye button up with the input box itself (the field's label and description sit above it,
+    // so centring on the whole block would put the button too low).
+    const align = () => {
+      const eye = eyeBox.current;
+      if (!input || !eye) return;
+      const inputRect = input.getBoundingClientRect();
+      const eyeRect = eye.getBoundingClientRect();
+      if (!inputRect.height || !eyeRect.height) return;
+      const current = parseFloat(eye.style.marginTop || "0") || 0;
+      const delta = inputRect.top + inputRect.height / 2 - (eyeRect.top + eyeRect.height / 2);
+      eye.style.marginTop = `${Math.max(0, current + delta)}px`;
+    };
+    align();
+    const later = setTimeout(align, 100); // once more after Steam has finished laying the field out
+
+    // The divider under the row: the same shade as Steam's own, when that can be read.
+    try {
+      const line = keySeparator.current;
+      const doc = keyBox.current?.ownerDocument;
+      const native = doc?.querySelector('[class*="WithBottomSeparatorStandard"]');
+      const shade = native ? getComputedStyle(native, "::after").backgroundColor : "";
+      if (line && shade && shade !== "rgba(0, 0, 0, 0)" && shade !== "transparent") line.style.backgroundColor = shade;
+    } catch {
+      /* the default shade stays */
+    }
+
+    return () => clearTimeout(later);
+  });
 
   useEffect(() => {
     if (restoreFocusId === null) return;
@@ -211,11 +255,11 @@ function Content() {
     return base ? `${base} · ${links}` : links;
   };
 
-  // ROM games grouped under their console profile's name.
-  const profileName = (id: string, fallback: string) => s.profiles.find((p) => p.id === id)?.name ?? fallback;
+  // ROM games grouped under their ROM profile's name; profiles the scan can't tell apart share one group.
+  const profileGroups = groupLabels(s.profiles);
   const groups = new Map<string, Row[]>();
   for (const g of s.romGames) {
-    const key = profileName(g.profileId, g.profileName || "Unknown profile");
+    const key = profileGroups.get(g.profileId) ?? (g.profileName || "Unknown profile");
     const row: Row = {
       appid: g.appid,
       name: nameOf(g),
@@ -289,7 +333,7 @@ function Content() {
   /* ---- Add ROM: a new Steam game, or an existing non-Steam one --------- */
   // ROM profiles write a shortcut's Target / Start In / Launch Options, so only
   // non-Steam games can take one (the game page's action menu applies the same rule).
-  const startNewRom = () => showModal(<NewGameModal onSubmit={(name) => startNewRomFlow(name, setS)} />, window);
+  const startNewRom = () => showModal(<NewGameModal onSubmit={(name, sgdb) => startNewRomFlow(name, setS, sgdb)} />, window);
 
   const startExistingRom = () => {
     const games = getInstalledGames().filter((g) => g.kind === "shortcut");
@@ -307,7 +351,7 @@ function Content() {
 
   const startAddRom = () => {
     if (s.profiles.length === 0) {
-      toast("Add a console profile first (Console profiles, below).");
+      toast("Add a ROM profile first (ROM profiles, below).");
       return;
     }
     showModal(<AddRomModal onNew={startNewRom} onExisting={startExistingRom} />, window);
@@ -460,7 +504,7 @@ function Content() {
         {scriptOpen && scriptRows.map(renderRow)}
       </PanelSection>
 
-      <PanelSection title="Console profiles">
+      <PanelSection title="ROM profiles">
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => editProfile(null)}>
             Add Profile
@@ -495,9 +539,11 @@ function Content() {
         {s.scriptDirs.map((d) => (
           <div key={d.path}>
             <PanelSectionRow>
+              <div style={{ wordBreak: "break-all", paddingTop: "8px" }}>{d.path}</div>
+            </PanelSectionRow>
+            <PanelSectionRow>
               <ToggleField
-                label={d.path}
-                description="Include subdirectories"
+                label="Include subdirectories"
                 checked={d.subdirs}
                 onChange={async (v: boolean) => setS(await setDirectorySubdirs(d.path, v))}
               />
@@ -515,7 +561,7 @@ function Content() {
         <PanelSectionRow>
           <TextField
             label="Script variable"
-            description="The variable set for each profile: rewritten inside the .sh file, or passed through launch options for scripts that read it from the environment."
+            description="The variable set for profiles if rewritten inside the .sh file (ignored by scripts that read from the environment via launch options)."
             value={varText ?? s.variable}
             onChange={async (e: any) => {
               setVarText(e.target.value);
@@ -532,8 +578,8 @@ function Content() {
         </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField
-            label="Back up scripts once"
-            description="Writes a .launchprofiles.bak next to each script the first time the plugin edits it. Only applies to scripts edited directly, not ones that take the profile from launch options."
+            label="Back up scripts"
+            description="Makes a backup for a script file the first time it is edited by this plugin."
             checked={s.backup}
             onChange={async (v: boolean) => setS(await setPromptOptions({ backup: v }))}
           />
@@ -543,8 +589,8 @@ function Content() {
       <PanelSection title="Settings">
         <PanelSectionRow>
           <ToggleField
-            label="Button on game pages"
-            description="Adds a button next to the Controller button to add or clear launch options"
+            label="Add button to game page"
+            description="Adds a shortcut next to the Controller button that can configure launch options."
             checked={s.showGameButton}
             onChange={async (v: boolean) => {
               setGameButtonEnabled(v);
@@ -558,8 +604,57 @@ function Content() {
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
+          <ToggleField
+            label="Apply SteamGridDB art"
+            bottomSeparator={s.sgdbArt ? "none" : "standard"}
+            description="Applies the first Capsule, Wide Capsule, Hero, Logo, and Icon available to a new ROM."
+            checked={s.sgdbArt}
+            onChange={async (v: boolean) => setS(await setSgdbArt(v))}
+          />
+        </PanelSectionRow>
+        {s.sgdbArt && (
+          <PanelSectionRow>
+            <Focusable
+              style={{ display: "flex", alignItems: "flex-start", gap: "8px", paddingTop: "8px", width: "100%" }}
+              // @ts-ignore
+              flow-children="row"
+            >
+              <div ref={keyBox} style={{ flex: 1, minWidth: 0 }}>
+                <TextField
+                  label="SteamGridDB API key"
+                  description="Found on steamgriddb.com under Preferences in the API tab."
+                  value={keyText ?? s.sgdbKey}
+                  onChange={async (e: any) => {
+                    setKeyText(e.target.value);
+                    setS(await setSgdbKey(e.target.value));
+                  }}
+                />
+              </div>
+              <div ref={eyeBox} style={{ flexShrink: 0 }}>
+                <DialogButton style={rowButton} onClick={() => setShowKey(!showKey)}>
+                  {showKey ? <FaEyeSlash size={14} /> : <FaEye size={14} />}
+                </DialogButton>
+              </div>
+            </Focusable>
+            <div
+              ref={keySeparator}
+              style={{ height: "1px", marginTop: "8px", backgroundColor: "rgba(255, 255, 255, 0.1)" }}
+            />
+          </PanelSectionRow>
+        )}
+        <PanelSectionRow>
+          <ToggleField
+            label="Add ROMs to collections"
+            bottomSeparator="standard"
+            description="Adds a new ROM to a new or matching collection."
+            checked={s.romCollections}
+            onChange={async (v: boolean) => setS(await setRomCollections(v))}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
           <ButtonItem
             layout="below"
+            bottomSeparator="none"
             onClick={editExclusions}
             description={s.exclusions.length > 0 ? s.exclusions.join(", ") : "Script file keywords/patterns to ignore on scan and launch"}
           >

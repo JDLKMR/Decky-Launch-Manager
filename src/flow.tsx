@@ -1,4 +1,4 @@
-import { forgetGameProfile, getSettings, listScripts, removeGame, setGameProfile, setRomGame, setScriptGame } from "./api";
+import { fetchSgdbArt, forgetGameProfile, getSettings, listScripts, removeGame, setGameProfile, setRomGame, setScriptGame } from "./api";
 import { promptPickGame } from "./LinkModals";
 import { newLinkId } from "./links";
 import {
@@ -10,10 +10,10 @@ import {
   subStyle,
 } from "./modals";
 import { resolveProfile } from "./profiles";
-import { applyProfile, applyScript, basename, clearGame, createShortcut } from "./steam";
+import { ART_LABELS, addToCollection, applyArtwork, applyProfile, applyScript, basename, clearGame, createShortcut } from "./steam";
 import { gameProfile } from "./store";
 import { toast } from "./toast";
-import type { Game, Profile, Settings } from "./types";
+import type { Game, Profile, Settings, SgdbGame } from "./types";
 import { showModal } from "./ui";
 
 /** Called with the new settings after a change, so the Decky menu can refresh if it is open. */
@@ -22,15 +22,76 @@ type OnSettings = ((s: Settings) => void) | undefined;
 /* ------------------------------------------------------------------ */
 /* Choose ROM file                                                      */
 /* ------------------------------------------------------------------ */
-async function applyRom(game: Game, profile: Profile, romPath: string, onSettings: OnSettings) {
+async function applyRom(game: Game, profile: Profile, romPath: string, onSettings: OnSettings): Promise<boolean> {
   try {
     await applyProfile(game, profile, romPath);
     const next = await setRomGame(game.appid, game.name, profile.id, profile.name, romPath, "added");
     onSettings?.(next);
     toast(`${profile.name} profile applied to ${game.name}`);
+    return true;
   } catch (e) {
     console.error("[Launch Manager] apply ROM failed", e);
     toast(`Could not update ${game.name}`);
+    return false;
+  }
+}
+
+/**
+ * What the New Game window decided about SteamGridDB: a game it matched (or the person picked),
+ * `null` for "no match, skip the art", or `undefined` when there was no decision (the match was
+ * still loading, or failed), in which case the title is searched for here instead.
+ */
+export type SgdbChoice = SgdbGame | null | undefined;
+
+/**
+ * With "Apply SteamGridDB art" on: apply the first Capsule, Wide Capsule, Hero, Logo and Icon of
+ * the SteamGridDB game chosen for a game created by the new-game ROM flow. Never blocks or undoes
+ * the ROM assignment. Silent when everything was applied, since the match was already confirmed
+ * in the New Game window; it only speaks up when something was missing or failed.
+ */
+async function artNewRom(game: Game, choice: SgdbChoice) {
+  try {
+    const settings = await getSettings();
+    if (!settings.sgdbArt) return;
+    if (choice === null) return; // "No match" was picked on purpose
+    if (!settings.sgdbKey) {
+      toast("Add your SteamGridDB API key in Settings to fetch art.");
+      return;
+    }
+    toast(`Fetching SteamGridDB art for ${game.name}…`);
+    const found = await fetchSgdbArt(game.name, game.appid, choice?.id ?? 0, choice?.name ?? "");
+    if (!found.ok) {
+      toast(found.error ?? "Could not fetch SteamGridDB art.");
+      return;
+    }
+    const { applied, failed } = await applyArtwork(game.appid, found.assets);
+    const label = (kinds: string[]) => kinds.map((k) => ART_LABELS[k as keyof typeof ART_LABELS]).join(", ");
+    const notes = [
+      found.missing.length ? `none found: ${label(found.missing)}` : "",
+      failed.length ? `failed: ${label(failed)}` : "",
+    ].filter(Boolean);
+    if (notes.length) {
+      toast(`SteamGridDB art for ${game.name}${applied.length ? "" : " not applied"} (${notes.join("; ")}).`);
+    }
+  } catch (e) {
+    console.error("[Launch Manager] SteamGridDB art failed", e);
+    toast(`Could not apply SteamGridDB art to ${game.name}`);
+  }
+}
+
+/**
+ * With "Add ROMs to collections" on: put a game created by the new-game ROM flow into the
+ * Steam collection named after its ROM profile. Never blocks or undoes the ROM assignment.
+ */
+async function collectNewRom(game: Game, profile: Profile) {
+  try {
+    if (!(await getSettings()).romCollections) return;
+    if ((await addToCollection(game.appid, profile.name)) === "unsupported") {
+      toast("This Steam client doesn't support adding games to collections.");
+    }
+  } catch (e) {
+    console.error("[Launch Manager] add to collection failed", e);
+    toast(`Could not add ${game.name} to the ${profile.name} collection`);
   }
 }
 
@@ -38,7 +99,13 @@ async function applyRom(game: Game, profile: Profile, romPath: string, onSetting
  * A ROM chosen for a game that does not exist yet: the shortcut is created only
  * now (after the ROM and profile are settled), so cancelling earlier leaves nothing behind.
  */
-async function applyRomToNew(name: string, profile: Profile, romPath: string, onSettings: OnSettings) {
+async function applyRomToNew(
+  name: string,
+  profile: Profile,
+  romPath: string,
+  onSettings: OnSettings,
+  sgdb: SgdbChoice,
+) {
   let game: Game;
   try {
     game = await createShortcut(name, profile.target);
@@ -47,7 +114,11 @@ async function applyRomToNew(name: string, profile: Profile, romPath: string, on
     toast(`Could not create ${name}`);
     return;
   }
-  await applyRom(game, profile, romPath, onSettings);
+  // Only a game created here gets art and a collection: assigning a ROM to an existing game leaves both alone.
+  if (await applyRom(game, profile, romPath, onSettings)) {
+    await artNewRom(game, sgdb);
+    await collectNewRom(game, profile);
+  }
 }
 
 /**
@@ -58,7 +129,7 @@ async function chooseRom(gameName: string, apply: (profile: Profile, romPath: st
   try {
     const s = await getSettings();
     if (s.profiles.length === 0) {
-      toast("Add a console profile first (Console profiles, in the Launch Manager menu).");
+      toast("Add a ROM profile first (ROM profiles, in the Launch Manager menu).");
       return;
     }
     showModal(
@@ -98,8 +169,8 @@ export const startRomFlow = (game: Game, onSettings?: OnSettings) =>
   chooseRom(game.name, (profile, romPath) => applyRom(game, profile, romPath, onSettings));
 
 /** ROM for a brand-new Steam shortcut with the given title. */
-export const startNewRomFlow = (name: string, onSettings?: OnSettings) =>
-  chooseRom(name, (profile, romPath) => applyRomToNew(name, profile, romPath, onSettings));
+export const startNewRomFlow = (name: string, onSettings?: OnSettings, sgdb?: SgdbChoice) =>
+  chooseRom(name, (profile, romPath) => applyRomToNew(name, profile, romPath, onSettings, sgdb));
 
 /* ------------------------------------------------------------------ */
 /* Add script file                                                      */

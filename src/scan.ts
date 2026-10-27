@@ -1,6 +1,6 @@
 import { matchRomGame, type RomMatch } from "./profiles";
 import { isExcluded, scriptFromDetails } from "./scripts";
-import { detailsUsable, forEachLimited, getAppDetails, getInstalledGames, liveName } from "./steam";
+import { detailsUsable, forEachLimited, getAppDetails, getInstalledGames, isInLibrary, liveName } from "./steam";
 import type { Game, RomGame, ScriptGame, Settings } from "./types";
 
 export interface ScanPlan {
@@ -24,13 +24,15 @@ interface Probe {
  * Read-only: looks at every installed game (plus anything already listed) and
  * works out what the games lists should become. Never modifies a game.
  *
- * - A non-Steam shortcut whose Target / Launch Options fit a console profile is a
+ * - A non-Steam shortcut whose Target / Launch Options fit a ROM profile is a
  *   ROM game. That takes priority over being a script game, because some
  *   profiles (the 3DS one) launch through a .sh file.
  * - Otherwise a game whose launch fields point at a .sh file is a script game,
  *   unless the file name matches an exclusion.
  * - Listed games that no longer fit are dropped, but only when Steam gave
  *   usable details for them, so a slow or failed lookup never removes anything.
+ * - Listed games that are no longer in the Steam library at all (a shortcut that
+ *   was deleted) are dropped from either list.
  * - Exclusions only ever apply to the script side.
  */
 export async function scanLibrary(s: Settings): Promise<ScanPlan> {
@@ -43,8 +45,15 @@ export async function scanLibrary(s: Settings): Promise<ScanPlan> {
     if (!games.has(e.appid)) games.set(e.appid, { appid: e.appid, name: e.name, kind: e.kind });
   }
 
+  // Games Steam no longer has. They are skipped below rather than probed, since Steam can
+  // hand back stale or no details for a deleted app, which would otherwise keep them listed.
+  const gone = new Set<number>();
+  for (const e of [...s.romGames, ...s.scriptGames]) {
+    if (!isInLibrary(e.appid)) gone.add(e.appid);
+  }
+
   const probes = new Map<number, Probe>();
-  await forEachLimited([...games.values()], 6, async (game) => {
+  await forEachLimited([...games.values()].filter((g) => !gone.has(g.appid)), 6, async (game) => {
     const d = await getAppDetails(game.appid);
     if (!d) return;
     const rom = game.kind === "shortcut" ? matchRomGame(d, s.profiles) : null;
@@ -57,6 +66,10 @@ export async function scanLibrary(s: Settings): Promise<ScanPlan> {
   /* ---- ROM games ---- */
   const romKnown = new Map(s.romGames.map((e) => [e.appid, e]));
   for (const e of s.romGames) {
+    if (gone.has(e.appid)) {
+      plan.romRemove.push(e.appid);
+      continue;
+    }
     const p = probes.get(e.appid);
     if (p?.usable && !p.rom) plan.romRemove.push(e.appid);
   }
@@ -83,6 +96,10 @@ export async function scanLibrary(s: Settings): Promise<ScanPlan> {
   /* ---- Script games ---- */
   const scriptKnown = new Map(s.scriptGames.map((e) => [e.appid, e]));
   for (const e of s.scriptGames) {
+    if (gone.has(e.appid)) {
+      plan.scriptRemove.push(e.appid);
+      continue;
+    }
     // Scan-found entries that now match an exclusion are dropped from the list
     // (the game's launch options are left alone). Entries added by hand stay.
     if (e.source === "scan" && isExcluded(e.script, s.exclusions)) {

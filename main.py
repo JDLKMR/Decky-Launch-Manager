@@ -1,9 +1,18 @@
 import copy
 import json
 import os
+import asyncio
+import base64
+import concurrent.futures
 import re
 import shlex
+import socket
+import ssl
 import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 
 import decky
@@ -28,33 +37,42 @@ DEFAULT_PROFILES = [
     _retroarch("nes", "NES", [".nes"], "mesen_libretro.so"),
     _retroarch("snes", "SNES", [".sfc"], "snes9x_libretro.so"),
     _retroarch("n64", "Nintendo 64", [".z64"], "mupen64plus_next_libretro.so"),
-    _retroarch("gb-gbc", "Game Boy/Game Boy Color", [".gb", ".gbc"], "gambatte_libretro.so"),
+    _retroarch("gb", "Game Boy", [".gb"], "gambatte_libretro.so"),
+    _retroarch("gbc", "Game Boy Color", [".gbc"], "gambatte_libretro.so"),
     _retroarch("gba", "Game Boy Advance", [".gba"], "mgba_libretro.so"),
-    _retroarch("nds", "Nintendo DS/DSiWare", [".nds"], "melondsds_libretro.so"),
+    _retroarch("nds", "DS", [".nds"], "melondsds_libretro.so"),
+    _retroarch("dsiware", "DSiWare", [".nds"], "melondsds_libretro.so"),
     {
         "id": "3ds",
-        "name": "Nintendo 3DS",
+        "name": "3DS",
         "fileTypes": [".cci"],
         "target": '"/home/deck/Scripts/azahar.sh"',
         "launchOptions": '"<rom_path>"',
     },
     {
-        "id": "gc-wii",
-        "name": "Nintendo GameCube/Wii",
+        "id": "gamecube",
+        "name": "GameCube",
+        "fileTypes": [".rvz"],
+        "target": '"/usr/bin/flatpak" run org.DolphinEmu.dolphin-emu',
+        "launchOptions": '-b -e "<rom_path>"',
+    },
+    {
+        "id": "wii",
+        "name": "Wii",
         "fileTypes": [".rvz"],
         "target": '"/usr/bin/flatpak" run org.DolphinEmu.dolphin-emu',
         "launchOptions": '-b -e "<rom_path>"',
     },
     {
         "id": "wiiu",
-        "name": "Nintendo Wii U",
+        "name": "Wii U",
         "fileTypes": [".wua"],
         "target": '"/home/deck/Applications/Cemu.AppImage"',
         "launchOptions": '-f -g "<rom_path>"',
     },
     {
         "id": "switch",
-        "name": "Nintendo Switch",
+        "name": "Switch",
         "fileTypes": [".nsp", ".xci"],
         "target": '"/home/deck/Applications/Eden.AppImage"',
         "launchOptions": '-f -g "<rom_path>"',
@@ -83,6 +101,8 @@ DEFAULTS = {
     "browserDir": "/home/deck/Emulation/roms",
     # each: {id, name, fileTypes: [".sfc", ...], target, launchOptions}
     "profiles": DEFAULT_PROFILES,
+    # Which set of pre-configured profile names/splits this settings file has been brought up to.
+    "profilesRev": 1,
     # each: {appid, name, profileId, profileName, rom, source: "added"|"scan"}
     "romGames": [],
     # --- script side ----------------------------------------------------
@@ -107,6 +127,11 @@ DEFAULTS = {
     "plImported": False,
     # --- shared ---------------------------------------------------------
     "showGameButton": True,
+    # A game created by the new-game ROM flow gets SteamGridDB art (needs the person's own API key).
+    "sgdbArt": False,
+    "sgdbKey": "",
+    # A game created by the new-game ROM flow goes into the Steam collection named like its ROM profile.
+    "romCollections": False,
 }
 
 MAX_SCRIPTS = 5000
@@ -422,6 +447,283 @@ def _import_profile_launcher(merged: dict) -> bool:
     return True
 
 
+# ---- SteamGridDB art ----------------------------------------------------------
+
+_SGDB_API = "https://www.steamgriddb.com/api/v2"
+_SGDB_UA = "LaunchManager/1.0 (Decky Loader plugin)"
+_SGDB_MAX_BYTES = 15 * 1024 * 1024
+# category -> (endpoint, filters). Static PNG/JPEG only, since that is what Steam takes; the
+# sizes are the ones that fit Steam's slots. Results come back best-first, and the first
+# usable one is taken.
+_SGDB_CATEGORIES = {
+    "capsule": ("grids", {"dimensions": "600x900,342x482,660x930", "types": "static", "mimes": "image/png,image/jpeg"}),
+    "wide": ("grids", {"dimensions": "920x430,460x215", "types": "static", "mimes": "image/png,image/jpeg"}),
+    "hero": ("heroes", {"types": "static", "mimes": "image/png,image/jpeg"}),
+    # SteamGridDB's logos only come as PNG or WebP; asking for image/jpeg is rejected with HTTP 400.
+    "logo": ("logos", {"types": "static", "mimes": "image/png"}),
+    "icon": ("icons", {"types": "static", "mimes": "image/png"}),
+}
+_SGDB_TRIES = 3  # per category: if the first image will not download, try the next few
+
+
+class _SgdbAuthError(Exception):
+    pass
+
+
+# Decky runs plugins on its own bundled Python, whose OpenSSL can end up with no usable CA
+# certificates (its default paths point at the build machine, or SSL_CERT_FILE names a file that
+# is not there), so every https request then fails certificate verification. Certificate checking
+# stays on: the system's CA bundle is loaded explicitly on top of whatever the defaults found.
+_CA_BUNDLES = (
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ca-certificates/extracted/tls-ca-bundle.pem",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
+)
+_ssl_context = None
+
+
+def _ssl_ctx() -> ssl.SSLContext:
+    global _ssl_context
+    if _ssl_context is not None:
+        return _ssl_context
+    ctx = ssl.create_default_context()
+    candidates = [os.environ.get("SSL_CERT_FILE", ""), *_CA_BUNDLES]
+    try:
+        import certifi  # type: ignore  # not bundled with every Decky, so optional
+
+        candidates.append(certifi.where())
+    except Exception:
+        pass
+    for path in candidates:
+        if path and os.path.isfile(path):
+            try:
+                ctx.load_verify_locations(cafile=path)
+                decky.logger.info("SteamGridDB: loaded CA certificates from %s", path)
+                break
+            except Exception as exc:
+                decky.logger.warning("SteamGridDB: could not load CA bundle %s: %s", path, exc)
+    _ssl_context = ctx
+    return ctx
+
+
+def _describe_net_error(exc: BaseException) -> str:
+    """A short reason for a failed request, small enough to read in a toast."""
+    reason = getattr(exc, "reason", None) or exc
+    if isinstance(exc, urllib.error.HTTPError):
+        return "HTTP %d" % exc.code
+    if isinstance(reason, ssl.SSLError):
+        return "SSL certificate check failed"
+    if isinstance(reason, (socket.timeout, TimeoutError)):
+        return "request timed out"
+    if isinstance(reason, socket.gaierror):
+        return "no network connection"
+    if isinstance(reason, OSError) and reason.strerror:
+        return reason.strerror
+    return str(reason)[:80]
+
+
+def _http_get(url: str, key: str | None = None, limit: int = _SGDB_MAX_BYTES) -> bytes:
+    """GET a URL. The API key is only ever sent to the API, never to the image CDN."""
+    headers = {"User-Agent": _SGDB_UA}
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=20, context=_ssl_ctx()
+        ) as resp:
+            data = resp.read(limit + 1)
+    except urllib.error.HTTPError as exc:
+        if key and exc.code in (401, 403):
+            raise _SgdbAuthError() from exc
+        raise
+    if len(data) > limit:
+        raise ValueError("image is too large")
+    return data
+
+
+def _sgdb_json(path: str, params: dict, key: str) -> list:
+    query = urllib.parse.urlencode(params)
+    body = json.loads(_http_get(_SGDB_API + path + ("?" + query if query else ""), key).decode("utf-8"))
+    if not body.get("success", False):
+        raise RuntimeError("; ".join(str(e) for e in body.get("errors", [])) or "SteamGridDB returned an error")
+    return body.get("data") or []
+
+
+def _image_ext(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG"):
+        return "png"
+    if data.startswith(b"\xff\xd8"):
+        return "jpg"
+    return None
+
+
+def _sgdb_first_image(game_id: int, category: str, key: str):
+    """(bytes, ext) of the first image in the category that downloads and is a PNG/JPEG, else None."""
+    endpoint, params = _SGDB_CATEGORIES[category]
+    path = "/%s/game/%d" % (endpoint, game_id)
+    try:
+        items = _sgdb_json(path, params, key)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 400:
+            raise
+        # The API refused one of the filters. Ask again without them; the downloaded bytes are
+        # checked for PNG/JPEG below anyway.
+        decky.logger.warning("SteamGridDB %s filters rejected (HTTP 400); retrying unfiltered", category)
+        items = _sgdb_json(path, {}, key)
+    for item in items[:_SGDB_TRIES]:
+        url = item.get("url")
+        if not url:
+            continue
+        try:
+            data = _http_get(url)
+        except Exception as exc:
+            decky.logger.warning("SteamGridDB %s download failed: %s", category, exc)
+            continue
+        ext = _image_ext(data)
+        if ext:
+            return data, ext
+    return None
+
+
+def _sgdb_error(exc: BaseException) -> str:
+    """The toast text for a failed SteamGridDB request."""
+    if isinstance(exc, _SgdbAuthError):
+        return "SteamGridDB rejected the API key."
+    if isinstance(exc, RuntimeError):
+        decky.logger.warning("SteamGridDB request failed: %s", exc)
+        return "SteamGridDB error: %s" % exc
+    decky.logger.error("SteamGridDB request failed: %r", exc)
+    return "Could not reach SteamGridDB (%s)." % _describe_net_error(exc)
+
+
+def _release_year(ts) -> int | None:
+    try:
+        ts = int(ts)
+        return time.gmtime(ts).tm_year if ts > 0 else None
+    except Exception:
+        return None
+
+
+def _sgdb_search(query: str, key: str) -> dict:
+    """Games matching `query`, best match first, each with the year it was released (when known)."""
+    out = {"ok": False, "games": []}
+    query = (query or "").strip()
+    if not query:
+        out["ok"] = True
+        return out
+    try:
+        matches = _sgdb_json("/search/autocomplete/" + urllib.parse.quote(query, safe=""), {}, key)
+    except Exception as exc:
+        out["error"] = _sgdb_error(exc)
+        return out
+    for m in matches[:25]:
+        try:
+            out["games"].append(
+                {"id": int(m["id"]), "name": str(m.get("name") or ""), "year": _release_year(m.get("release_date"))}
+            )
+        except Exception:
+            continue
+    out["ok"] = True
+    return out
+
+
+def _sgdb_collect(name: str, appid: int, key: str, game_id: int = 0, title: str = "") -> dict:
+    """Download the art for a game. `game_id` is a SteamGridDB game the person already picked;
+    without one, `name` is searched for and the best match is used."""
+    out = {"ok": False, "assets": {}, "missing": []}
+    if game_id:
+        out["title"] = title or name
+    else:
+        found_games = _sgdb_search(name, key)
+        if not found_games["ok"]:
+            out["error"] = found_games["error"]
+            return out
+        if not found_games["games"]:
+            out["error"] = 'No SteamGridDB match for "%s".' % name
+            return out
+        game_id = found_games["games"][0]["id"]
+        out["title"] = found_games["games"][0]["name"] or name
+
+    def one(category):
+        try:
+            return category, _sgdb_first_image(int(game_id), category, key)
+        except Exception as exc:
+            decky.logger.warning("SteamGridDB %s lookup failed: %s", category, exc)
+            return category, None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(_SGDB_CATEGORIES)) as pool:
+        found = dict(pool.map(one, _SGDB_CATEGORIES))
+
+    for category in _SGDB_CATEGORIES:  # a fixed order, so the result reads the same every time
+        hit = found.get(category)
+        if not hit:
+            out["missing"].append(category)
+        elif category == "icon":
+            # A shortcut's icon is a file path to Steam, not image data.
+            folder = os.path.join(getattr(decky, "DECKY_PLUGIN_RUNTIME_DIR", decky.DECKY_PLUGIN_SETTINGS_DIR), "icons")
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, "%d.%s" % (appid, hit[1]))
+            with open(path, "wb") as f:
+                f.write(hit[0])
+            out["assets"][category] = {"path": path, "ext": hit[1]}
+        else:
+            out["assets"][category] = {"b64": base64.b64encode(hit[0]).decode("ascii"), "ext": hit[1]}
+
+    out["ok"] = bool(out["assets"])
+    if not out["ok"]:
+        out["error"] = 'SteamGridDB has no usable art for "%s".' % out["title"]
+    return out
+
+
+def _upgrade_default_profiles(merged: dict) -> None:
+    """Settings saved before the pre-configured profiles were renamed and split still hold the
+    old ones. Bring over only those that are still unrenamed (a profile whose name the person
+    changed is theirs and is left alone). A split keeps the old profile's Target and Launch
+    Options for both halves, and games already assigned to it are moved to the matching half."""
+    profiles = merged["profiles"]
+    by_id = {p["id"]: p for p in profiles}
+    renames = {"3ds": ("Nintendo 3DS", "3DS"), "wiiu": ("Nintendo Wii U", "Wii U"), "switch": ("Nintendo Switch", "Switch")}
+    for pid, (old, new) in renames.items():
+        if pid in by_id and by_id[pid]["name"] == old:
+            by_id[pid]["name"] = new
+
+    def copy_of(src: dict, pid: str, name: str, types: list) -> dict:
+        return {"id": pid, "name": name, "fileTypes": types, "target": src["target"], "launchOptions": src["launchOptions"]}
+
+    moves = {}  # old profile id -> function(rom path) -> new profile id
+    new_profiles = []
+
+    old = by_id.get("gb-gbc")
+    if old and old["name"] == "Game Boy/Game Boy Color":
+        profiles.remove(old)
+        new_profiles += [copy_of(old, "gb", "Game Boy", [".gb"]), copy_of(old, "gbc", "Game Boy Color", [".gbc"])]
+        moves["gb-gbc"] = lambda rom: "gbc" if rom.lower().endswith(".gbc") else "gb"
+
+    old = by_id.get("nds")
+    if old and old["name"] == "Nintendo DS/DSiWare":
+        old["name"] = "DS"
+        new_profiles.append(copy_of(old, "dsiware", "DSiWare", [".nds"]))
+
+    old = by_id.get("gc-wii")
+    if old and old["name"] == "Nintendo GameCube/Wii":
+        profiles.remove(old)
+        # Both halves share .rvz, so there is nothing to tell an existing game's half by: it goes to GameCube
+        # (the launch options are the same either way).
+        new_profiles += [copy_of(old, "gamecube", "GameCube", old["fileTypes"]), copy_of(old, "wii", "Wii", old["fileTypes"])]
+        moves["gc-wii"] = lambda rom: "gamecube"
+
+    have = {p["id"] for p in profiles}
+    profiles += [p for p in new_profiles if p["id"] not in have]
+    names = {p["id"]: p["name"] for p in profiles}
+    for g in merged["romGames"]:
+        if g["profileId"] in moves:
+            g["profileId"] = moves[g["profileId"]](g["rom"])
+        if g["profileId"] in names:
+            g["profileName"] = names[g["profileId"]]
+    merged["profiles"] = _sorted(profiles)
+
+
 def _import_previous_name() -> dict | None:
     """First run only: this plugin used to be called Launch Editor (before that, Launch
     Options Manager), and Decky keeps settings per plugin name. Take the old settings
@@ -478,6 +780,8 @@ def _load() -> dict:
         # A renamed plugin gets a fresh settings folder: bring the old one over first.
         data = _import_previous_name() or _migrate()
         migrated = bool(data)
+    # Settings written before the profile names/splits changed carry no revision number.
+    old_profiles = bool(data) and not isinstance(data.get("profilesRev"), int)
     merged = copy.deepcopy(DEFAULTS)
     merged.update({k: v for k, v in data.items() if k in DEFAULTS})
 
@@ -498,6 +802,9 @@ def _load() -> dict:
     if not isinstance(merged["browserDir"], str) or not merged["browserDir"]:
         merged["browserDir"] = DEFAULTS["browserDir"]
     merged["showGameButton"] = bool(merged["showGameButton"])
+    merged["romCollections"] = bool(merged["romCollections"])
+    merged["sgdbArt"] = bool(merged["sgdbArt"])
+    merged["sgdbKey"] = str(merged["sgdbKey"] or "").strip()
     merged["askByDefault"] = bool(merged["askByDefault"])
     merged["backup"] = bool(merged["backup"])
     merged["plImported"] = bool(merged["plImported"])
@@ -510,6 +817,10 @@ def _load() -> dict:
             if clean and str(key).isdigit():
                 profiles_by_game[str(key)] = clean
     merged["gameProfiles"] = profiles_by_game
+    if old_profiles:
+        _upgrade_default_profiles(merged)
+        merged["profilesRev"] = DEFAULTS["profilesRev"]
+        migrated = True
     if migrated:
         _save(merged)  # so the import happens only once
     return merged
@@ -598,7 +909,42 @@ class Plugin:
         s["showGameButton"] = bool(value)
         return _save(s)
 
-    # ---- console profiles -----------------------------------------------
+    async def set_sgdb_art(self, value: bool) -> dict:
+        s = _load()
+        s["sgdbArt"] = bool(value)
+        return _save(s)
+
+    async def set_sgdb_key(self, key: str) -> dict:
+        s = _load()
+        s["sgdbKey"] = str(key or "").strip()
+        return _save(s)
+
+    async def fetch_sgdb_art(self, name: str, appid: int, sgdb_id: int = 0, sgdb_title: str = "") -> dict:
+        """Download the first usable Capsule, Wide Capsule, Hero, Logo and Icon for a game. With
+        `sgdb_id` (a SteamGridDB game the person picked) that game is used; otherwise `name` is
+        searched for. The network work happens here, off the event loop."""
+        key = _load()["sgdbKey"]
+        if not key:
+            return {"ok": False, "error": "Add your SteamGridDB API key in Settings first.", "assets": {}, "missing": []}
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, _sgdb_collect, name, int(appid), key, int(sgdb_id or 0), str(sgdb_title or "")
+        )
+
+    async def search_sgdb_games(self, query: str) -> dict:
+        """Search SteamGridDB for games by title: {ok, games: [{id, name, year}], error?}."""
+        key = _load()["sgdbKey"]
+        if not key:
+            return {"ok": False, "error": "Add your SteamGridDB API key in Settings first.", "games": []}
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sgdb_search, str(query or ""), key)
+
+    async def set_rom_collections(self, value: bool) -> dict:
+        s = _load()
+        s["romCollections"] = bool(value)
+        return _save(s)
+
+    # ---- ROM profiles -----------------------------------------------
     async def save_profile(self, profile: dict) -> dict:
         """Create (no id / unknown id) or update (known id) a profile."""
         clean = _clean_profile(profile)

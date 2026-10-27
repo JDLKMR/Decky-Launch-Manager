@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FaArrowUp, FaCheck, FaFile, FaFolder, FaGamepad, FaLink, FaPlus, FaTerminal, FaTrash } from "react-icons/fa";
-import { deleteProfile, listDir, saveProfile, setExclusions } from "./api";
+import { deleteProfile, getSettings, listDir, saveProfile, searchSgdbGames, setExclusions } from "./api";
 import { describeFileTypes, normalizeFileTypes } from "./profiles";
-import type { DirListing, Game, Profile, ScriptFile, Settings } from "./types";
+import type { DirListing, Game, Profile, ScriptFile, Settings, SgdbGame } from "./types";
 import {
   DialogBody,
   DialogButton,
@@ -33,6 +33,10 @@ const ellipsis = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap" as const,
 };
+
+// Buttons that share a row: DialogButton has a wide default minimum width, so four of them
+// overflow the modal unless they are allowed to shrink and split the row evenly.
+const editorButtonStyle = { flex: "1 1 0", minWidth: 0, padding: "10px 8px" };
 
 const joinPath = (base: string, name: string) => `${base.replace(/\/$/, "")}/${name}`;
 
@@ -117,13 +121,13 @@ export function AddRomModal({
         <DialogButton style={itemStyle} onClick={choose(onNew)}>
           <div style={rowStyle}>
             <FaPlus />
-            <span style={ellipsis}>New Steam Game</span>
+            <span style={ellipsis}>New Game</span>
           </div>
         </DialogButton>
         <DialogButton style={itemStyle} onClick={choose(onExisting)}>
           <div style={rowStyle}>
             <FaGamepad />
-            <span style={ellipsis}>Existing Steam Game</span>
+            <span style={ellipsis}>Existing Game</span>
           </div>
         </DialogButton>
       </DialogBody>
@@ -131,18 +135,220 @@ export function AddRomModal({
   );
 }
 
-/** Title for a new Steam shortcut. Nothing is created until a ROM and profile are chosen. */
+/* ------------------------------------------------------------------ */
+/* New Game: title, and the SteamGridDB game its art comes from         */
+/* ------------------------------------------------------------------ */
+const MATCH_DELAY_MS = 500;
+
+/**
+ * A SteamGridDB game as "Title (year)": the title in the button's normal text color, the year
+ * dimmed to gray. Neither sets a color of its own, so both invert with the button when it is
+ * focused (white button text turns dark) instead of staying white on the white highlight.
+ */
+function SgdbGameLabel({ game }: { game: SgdbGame }) {
+  return (
+    <span style={ellipsis}>
+      <span>{game.name}</span>
+      {game.year ? <span style={{ opacity: 0.55 }}> ({game.year})</span> : null}
+    </span>
+  );
+}
+
+/** Search SteamGridDB by title and pick a game (or "No match", to skip the art). */
+function SgdbMatchModal({
+  initialQuery,
+  selectedId,
+  onPick,
+  closeModal,
+}: {
+  initialQuery: string;
+  /** The game currently chosen: undefined = none, so "No match" is the checked row. */
+  selectedId: number | undefined;
+  onPick: (game: SgdbGame | null) => void;
+} & CloseProps) {
+  const [query, setQuery] = useState(initialQuery);
+  const [games, setGames] = useState<SgdbGame[]>([]);
+  const [status, setStatus] = useState<"loading" | "done" | "error">("loading");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setGames([]);
+      setStatus("done");
+      return;
+    }
+    setStatus("loading");
+    let cancelled = false;
+    // Search straight away for the title it was opened with; wait for a pause in typing after that.
+    const timer = setTimeout(
+      async () => {
+        try {
+          const r = await searchSgdbGames(q);
+          if (cancelled) return;
+          if (r.ok) {
+            setGames(r.games);
+            setStatus("done");
+          } else {
+            setGames([]);
+            setError(r.error ?? "Could not search SteamGridDB.");
+            setStatus("error");
+          }
+        } catch (e) {
+          if (cancelled) return;
+          console.error("[Launch Manager] SteamGridDB search failed", e);
+          setGames([]);
+          setError("Could not search SteamGridDB.");
+          setStatus("error");
+        }
+      },
+      q === initialQuery.trim() ? 0 : MATCH_DELAY_MS,
+    );
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
+
+  const choose = (game: SgdbGame | null) => () => {
+    onPick(game);
+    closeModal?.();
+  };
+
+  return (
+    <ModalRoot onCancel={closeModal} closeModal={closeModal}>
+      <DialogHeader>SteamGridDB Match</DialogHeader>
+      <DialogBody>
+        <TextField label="Search" value={query} onChange={(e: any) => setQuery(e.target.value)} />
+        <div style={{ marginTop: "12px" }}>
+          <DialogButton style={itemStyle} onClick={choose(null)}>
+            <div style={rowStyle}>
+              <span style={{ ...ellipsis, opacity: 0.8 }}>No match (skip art)</span>
+              {selectedId === undefined && <FaCheck />}
+            </div>
+          </DialogButton>
+          {games.map((g) => (
+            <DialogButton key={g.id} style={itemStyle} onClick={choose(g)}>
+              <div style={rowStyle}>
+                <SgdbGameLabel game={g} />
+                {g.id === selectedId && <FaCheck />}
+              </div>
+            </DialogButton>
+          ))}
+          {status === "loading" && <div style={{ opacity: 0.7 }}>Searching…</div>}
+          {status === "error" && <div style={{ opacity: 0.7 }}>{error}</div>}
+          {status === "done" && games.length === 0 && query.trim() && (
+            <div style={{ opacity: 0.7 }}>No games found.</div>
+          )}
+        </div>
+      </DialogBody>
+    </ModalRoot>
+  );
+}
+
+/**
+ * Title for a new Steam shortcut. Nothing is created until a ROM and profile are chosen.
+ *
+ * With "Apply SteamGridDB art" on there is also a SteamGridDB match field: it follows the title
+ * with the closest match until the person picks one themselves. `onSubmit` gets the chosen game,
+ * `null` for "no match", or `undefined` when the option is off or no match was decided.
+ */
 export function NewGameModal({
   onSubmit,
   closeModal,
-}: { onSubmit: (name: string) => void } & CloseProps) {
+}: { onSubmit: (name: string, sgdb: SgdbGame | null | undefined) => void } & CloseProps) {
   const [name, setName] = useState("");
+  const [sgdb, setSgdb] = useState<{ enabled: boolean; hasKey: boolean }>({ enabled: false, hasKey: false });
+  const [match, setMatch] = useState<SgdbGame | null>(null);
+  const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [manual, setManual] = useState(false); // the person picked a match, so stop following the title
   const trimmed = name.trim();
+
+  useEffect(() => {
+    let alive = true;
+    getSettings()
+      .then((s) => alive && setSgdb({ enabled: s.sgdbArt, hasKey: !!s.sgdbKey }))
+      .catch((e) => console.error("[Launch Manager] could not read settings", e));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const searching = sgdb.enabled && sgdb.hasKey && !manual;
+  useEffect(() => {
+    if (!searching) return;
+    if (!trimmed) {
+      setMatch(null);
+      setStatus("idle");
+      return;
+    }
+    setStatus("loading");
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const r = await searchSgdbGames(trimmed);
+        if (cancelled) return;
+        setMatch(r.ok ? (r.games[0] ?? null) : null);
+        setStatus(r.ok ? "done" : "error");
+      } catch (e) {
+        if (cancelled) return;
+        console.error("[Launch Manager] SteamGridDB match failed", e);
+        setMatch(null);
+        setStatus("error");
+      }
+    }, MATCH_DELAY_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [trimmed, searching]);
+
+  const pick = () =>
+    showModal(
+      <SgdbMatchModal
+        initialQuery={trimmed}
+        selectedId={match?.id}
+        onPick={(game) => {
+          setManual(true);
+          setMatch(game);
+          setStatus("done");
+        }}
+      />,
+      window,
+    );
+
+  const matchLabel = !sgdb.hasKey ? (
+    <span style={{ ...ellipsis, opacity: 0.6 }}>Add your SteamGridDB API key in Settings</span>
+  ) : match ? (
+    <SgdbGameLabel game={match} />
+  ) : status === "loading" ? (
+    <span style={{ ...ellipsis, opacity: 0.6 }}>Searching…</span>
+  ) : status === "error" ? (
+    <span style={{ ...ellipsis, opacity: 0.6 }}>Could not search SteamGridDB</span>
+  ) : (
+    <span style={{ ...ellipsis, opacity: 0.6 }}>{trimmed || manual ? "No match" : "Enter a title first"}</span>
+  );
+
+  // A match is only passed on once it is settled (picked, or found and not still changing).
+  const decided = manual || status === "done";
+  const choice = sgdb.enabled && sgdb.hasKey && decided ? match : undefined;
+
   return (
     <ModalRoot onCancel={closeModal} closeModal={closeModal}>
-      <DialogHeader>New Steam Game</DialogHeader>
+      <DialogHeader>New Game</DialogHeader>
       <DialogBody>
         <TextField label="Title" value={name} onChange={(e: any) => setName(e.target.value)} />
+        {sgdb.enabled && (
+          <div style={{ marginTop: "12px" }}>
+            <div style={{ ...subStyle, marginBottom: "6px", wordBreak: "normal", textTransform: "uppercase" }}>SteamGridDB Match</div>
+            <DialogButton style={itemStyle} disabled={!sgdb.hasKey} onClick={pick}>
+              <div style={rowStyle}>
+                {matchLabel}
+                <span style={{ opacity: 0.6 }}>▾</span>
+              </div>
+            </DialogButton>
+          </div>
+        )}
         <Focusable
           // @ts-ignore
           style={{ display: "flex", gap: "8px", marginTop: "16px" }}
@@ -151,7 +357,7 @@ export function NewGameModal({
             disabled={!trimmed}
             onClick={() => {
               closeModal?.();
-              onSubmit(trimmed);
+              onSubmit(trimmed, choice);
             }}
           >
             Continue
@@ -193,7 +399,7 @@ export function FileBrowserModal({
   closeModal,
 }: {
   startPath: string;
-  /** `chooseProfile` is true when the toggle asks to pick the console profile by hand. */
+  /** `chooseProfile` is true when the toggle asks to pick the ROM profile by hand. */
   onSelect: (path: string, chooseProfile: boolean) => void;
 } & CloseProps) {
   const { listing, load, limit, showMore } = useListing(startPath);
@@ -206,7 +412,7 @@ export function FileBrowserModal({
       <DialogBody>
         <div style={{ marginBottom: "10px" }}>
           <ToggleField
-            label="Choose different console profile on selection"
+            label="Choose different ROM profile on selection"
             checked={chooseProfile}
             onChange={(v: boolean) => setChooseProfile(v)}
           />
@@ -307,7 +513,7 @@ export function DirectoryBrowserModal({
 }
 
 /* ------------------------------------------------------------------ */
-/* Console profile selection (no / ambiguous file type)                */
+/* ROM profile selection (no / ambiguous file type)                */
 /* ------------------------------------------------------------------ */
 export function ProfilePickerModal({
   gameName,
@@ -326,7 +532,7 @@ export function ProfilePickerModal({
 } & CloseProps) {
   return (
     <ModalRoot onCancel={closeModal} closeModal={closeModal}>
-      <DialogHeader>Choose Console Profile</DialogHeader>
+      <DialogHeader>Choose ROM Profile</DialogHeader>
       <DialogBody>
         <div style={{ marginBottom: "6px" }}>
           <b>{romName}</b> for {gameName}
@@ -574,7 +780,49 @@ export function ConfirmModal({
 }
 
 /* ------------------------------------------------------------------ */
-/* Add / edit a console profile                                        */
+/* Copy a ROM profile: pick the new one's name                          */
+/* ------------------------------------------------------------------ */
+function CopyProfileModal({
+  source,
+  onCopy,
+  closeModal,
+}: {
+  source: Profile;
+  onCopy: (name: string) => void;
+} & CloseProps) {
+  const [name, setName] = useState(`${source.name} copy`);
+  return (
+    <ModalRoot onCancel={closeModal} closeModal={closeModal}>
+      <DialogHeader>Copy Profile</DialogHeader>
+      <DialogBody>
+        <div style={{ ...subStyle, fontSize: "0.9em", marginBottom: "12px" }}>
+          The copy borrows the Target and Launch options of {source.name}.
+        </div>
+        <TextField label="Name" value={name} onChange={(e: any) => setName(e.target.value)} />
+        <Focusable
+          // @ts-ignore
+          style={{ display: "flex", gap: "8px", marginTop: "16px" }}
+          // @ts-ignore
+          flow-children="row"
+        >
+          <DialogButton
+            disabled={!name.trim()}
+            onClick={() => {
+              closeModal?.();
+              onCopy(name.trim());
+            }}
+          >
+            Copy
+          </DialogButton>
+          <DialogButton onClick={() => closeModal?.()}>Cancel</DialogButton>
+        </Focusable>
+      </DialogBody>
+    </ModalRoot>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Add / edit a ROM profile                                        */
 /* ------------------------------------------------------------------ */
 export function ProfileEditorModal({
   profile,
@@ -617,6 +865,34 @@ export function ProfileEditorModal({
       setBusy(false);
     }
   };
+
+  // Copy: a new profile with this one's Target and Launch options and a name of the person's choosing (no file
+  // types, so it never claims a ROM on its own), then straight into its editor to adjust it.
+  const copy = () =>
+    showModal(
+      <CopyProfileModal
+        source={profile!}
+        onCopy={async (copyName) => {
+          try {
+            const before = new Set(profiles.map((p) => p.id));
+            const next = await saveProfile({
+              name: copyName,
+              fileTypes: [],
+              target: profile!.target,
+              launchOptions: profile!.launchOptions,
+            });
+            onChange(next);
+            closeModal?.();
+            const created = next.profiles.find((p) => !before.has(p.id));
+            if (created) {
+              showModal(<ProfileEditorModal profile={created} profiles={next.profiles} onChange={onChange} />);
+            }
+          } catch (e) {
+            console.error("[Launch Manager] copy profile failed", e);
+          }
+        }}
+      />,
+    );
 
   const remove = () =>
     showModal(
@@ -665,15 +941,26 @@ export function ProfileEditorModal({
         ))}
         <Focusable
           // @ts-ignore
-          style={{ display: "flex", gap: "8px", marginTop: "16px" }}
+          style={{ display: "flex", gap: "8px", marginTop: "16px", width: "100%", boxSizing: "border-box" }}
           // @ts-ignore
           flow-children="row"
         >
-          <DialogButton disabled={busy || !name.trim() || !target.trim()} onClick={save}>
+          <DialogButton style={editorButtonStyle} disabled={busy || !name.trim() || !target.trim()} onClick={save}>
             Save
           </DialogButton>
-          <DialogButton onClick={() => closeModal?.()}>Cancel</DialogButton>
-          {profile && <DialogButton onClick={remove}>Delete</DialogButton>}
+          <DialogButton style={editorButtonStyle} onClick={() => closeModal?.()}>
+            Cancel
+          </DialogButton>
+          {profile && (
+            <DialogButton style={editorButtonStyle} onClick={copy}>
+              Copy
+            </DialogButton>
+          )}
+          {profile && (
+            <DialogButton style={editorButtonStyle} onClick={remove}>
+              Delete
+            </DialogButton>
+          )}
         </Focusable>
       </DialogBody>
     </ModalRoot>

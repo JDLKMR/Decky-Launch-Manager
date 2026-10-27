@@ -14,7 +14,7 @@ export interface ReturnTarget {
   appid: number;
   /** Which games list the row was in. */
   list: ListKind;
-  /** The console-profile group it sat under (ROM games only). */
+  /** The ROM-profile group it sat under (ROM games only). */
   group?: string;
 }
 

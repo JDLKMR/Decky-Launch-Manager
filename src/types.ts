@@ -64,6 +64,12 @@ export interface GameProfile {
 export interface Settings {
   browserDir: string;
   showGameButton: boolean;
+  /** A game newly created by the new-game ROM flow gets SteamGridDB art applied. */
+  sgdbArt: boolean;
+  /** The person's own SteamGridDB API key (a free account has one). */
+  sgdbKey: string;
+  /** A game newly created by the new-game ROM flow is added to the Steam collection named like its ROM profile. */
+  romCollections: boolean;
   /** Always alphabetical by name (the backend sorts them). */
   profiles: Profile[];
   romGames: RomGame[];
@@ -126,4 +132,40 @@ export interface WriteResult {
   value?: string;
   unchanged?: boolean;
   error?: string;
+}
+
+/** The kinds of art the new-game ROM flow can fetch from SteamGridDB. */
+export type ArtKind = "capsule" | "wide" | "hero" | "logo" | "icon";
+
+export interface SgdbAsset {
+  /** The image, base64-encoded (everything except the icon). */
+  b64?: string;
+  /** Where the image was saved on disk (the icon: Steam wants a file path). */
+  path?: string;
+  /** "png" or "jpg". */
+  ext: string;
+}
+
+export interface SgdbResult {
+  ok: boolean;
+  error?: string;
+  /** The SteamGridDB title the game's name matched. */
+  title?: string;
+  assets: Partial<Record<ArtKind, SgdbAsset>>;
+  /** Categories SteamGridDB had nothing usable for. */
+  missing: ArtKind[];
+}
+
+/** A game on SteamGridDB, as listed in the match picker. */
+export interface SgdbGame {
+  id: number;
+  name: string;
+  /** Release year, when SteamGridDB has one. */
+  year: number | null;
+}
+
+export interface SgdbSearchResult {
+  ok: boolean;
+  error?: string;
+  games: SgdbGame[];
 }

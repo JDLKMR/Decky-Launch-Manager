@@ -1,4 +1,4 @@
-import type { Game, Profile } from "./types";
+import type { ArtKind, Game, Profile, SgdbAsset } from "./types";
 
 const w = window as any;
 
@@ -56,6 +56,23 @@ export function getInstalledGames(): Game[] {
   return [...seen]
     .map(([appid, v]) => ({ appid, name: v.name, kind: (v.shortcut ? "shortcut" : "steam") as Game["kind"] }))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+/**
+ * False only when Steam's library is loaded and has no trace of `appid`: it is in neither the
+ * full-library collection nor the app store (a shortcut deleted in Steam leaves both). An empty
+ * or not-yet-loaded library answers true, so a scan run before Steam has finished loading can
+ * never read every listed game as removed.
+ */
+export function isInLibrary(appid: number): boolean {
+  try {
+    const all = toArray(w.collectionStore?.allAppsCollection?.allApps);
+    if (!all.length) return true; // library not loaded: assume nothing was removed
+    if (all.some((app: any) => app?.appid === appid)) return true;
+    return !!w.appStore?.GetAppOverviewByAppID?.(appid);
+  } catch {
+    return true;
+  }
 }
 
 /** Build a Game from an appid (used by the game-page button). */
@@ -388,4 +405,112 @@ export function setLaunchOptions(appid: number, options: string): void {
     throw new Error("Steam doesn't expose a way to set launch options here");
   }
   setter.call(apps, appid, options);
+}
+
+/* ------------------------------------------------------------------ */
+/* Collections                                                         */
+/* ------------------------------------------------------------------ */
+
+export type CollectionResult = "added" | "created" | "unsupported";
+
+/**
+ * Add a game to the Steam collection called `name` (matched case-insensitively against the
+ * existing ones), creating that collection first if there is none. Resolves "unsupported"
+ * when this Steam client doesn't expose collections the expected way, and throws if the
+ * client does but a step fails.
+ */
+export async function addToCollection(appid: number, name: string): Promise<CollectionResult> {
+  const store = w.collectionStore;
+  const label = name.trim();
+  if (!label || typeof store?.NewUnsavedCollection !== "function") return "unsupported";
+
+  // A shortcut that was only just created can take a moment to show up.
+  let overview = getOverview(appid);
+  for (let i = 0; !overview && i < 15; i++) {
+    await sleep(200);
+    overview = getOverview(appid);
+  }
+  if (!overview) throw new Error("Steam hasn't loaded the new game yet");
+
+  const wanted = label.toLowerCase();
+  const existing = toArray(store.userCollections).find(
+    (c: any) => String(c?.displayName ?? c?.name ?? "").trim().toLowerCase() === wanted,
+  );
+
+  if (existing) {
+    existing.AsDragDropCollection().AddApps([overview]);
+    await existing.Save();
+    return "added";
+  }
+
+  // A new collection only takes apps once it has been saved (it gets its id then): save it empty, then fill it.
+  const created = store.NewUnsavedCollection(label, undefined, []);
+  await created.Save();
+  created.AsDragDropCollection().AddApps([overview]);
+  await created.Save();
+  return "created";
+}
+
+/* ------------------------------------------------------------------ */
+/* Custom artwork (SteamGridDB)                                        */
+/* ------------------------------------------------------------------ */
+
+/** SetCustomArtworkForApp's assetType for each kind. [verify on device] The icon isn't one of these: see applyArtwork. */
+const ART_ASSET_TYPE = { capsule: 0, hero: 1, logo: 2, wide: 3 } as const;
+
+export const ART_LABELS: Record<ArtKind, string> = {
+  capsule: "Capsule",
+  wide: "Wide Capsule",
+  hero: "Hero",
+  logo: "Logo",
+  icon: "Icon",
+};
+
+/**
+ * Apply fetched art to a (non-Steam) game. Resolves with which kinds took and which failed;
+ * one failing never stops the others.
+ */
+export async function applyArtwork(
+  appid: number,
+  assets: Partial<Record<ArtKind, SgdbAsset>>,
+): Promise<{ applied: ArtKind[]; failed: ArtKind[] }> {
+  const applied: ArtKind[] = [];
+  const failed: ArtKind[] = [];
+  const apps = w.SteamClient?.Apps;
+
+  for (const kind of ["capsule", "hero", "logo", "wide"] as const) {
+    const asset = assets[kind];
+    if (!asset?.b64) continue;
+    try {
+      await apps.SetCustomArtworkForApp(appid, asset.b64, asset.ext, ART_ASSET_TYPE[kind]);
+      if (kind === "logo") {
+        // A shortcut's logo shows blank until it has a position (the SteamGridDB plugin does the same).
+        await w.appDetailsStore?.SaveCustomLogoPosition?.(getOverview(appid), {
+          pinnedPosition: "BottomLeft",
+          nWidthPct: 50,
+          nHeightPct: 50,
+        });
+      }
+      applied.push(kind);
+    } catch (e) {
+      console.error(`[Launch Manager] applying ${kind} art failed`, e);
+      failed.push(kind);
+    }
+  }
+
+  // A shortcut's icon is a file path rather than image data. [verify on device] The SteamGridDB plugin
+  // edits shortcuts.vdf and restarts Steam for icons, so this one may not show until Steam restarts.
+  const icon = assets.icon;
+  if (icon?.path) {
+    try {
+      if (typeof apps?.SetShortcutIcon !== "function") throw new Error("SetShortcutIcon is not available");
+      await apps.SetShortcutIcon(appid, icon.path);
+      applied.push("icon");
+    } catch (e) {
+      console.error("[Launch Manager] applying icon failed", e);
+      failed.push("icon");
+    }
+  }
+
+  return { applied, failed };
 }
