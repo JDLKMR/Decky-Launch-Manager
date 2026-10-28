@@ -8,7 +8,7 @@
 /** How long after a game's settings close the panel will still restore. */
 const RETURN_WINDOW_MS = 8000;
 
-export type ListKind = "rom" | "script";
+export type ListKind = "rom" | "script" | "link";
 
 export interface ReturnTarget {
   appid: number;
@@ -28,7 +28,8 @@ export function rememberGameSettingsOpened(target: ReturnTarget): void {
 
 /** That modal has closed. Wakes a panel that stayed mounted through it. */
 export function noteGameSettingsClosed(appid: number): void {
-  if (!returnTo || returnTo.appid !== appid) return;
+  // Only a modal opened from a games list row set `modalOpen`; one opened from a game page has nothing to return to.
+  if (!returnTo || !returnTo.modalOpen || returnTo.appid !== appid) return;
   returnTo = { ...returnTo, modalOpen: false, closedAt: Date.now() };
   closedListeners.forEach((listener) => listener());
 }

@@ -1,4 +1,4 @@
-// Picking the game a shortcut profile opens, and naming/renaming shortcut profiles.
+// Picking the game a game link opens, and naming/renaming game links.
 import { useMemo, useRef, useState } from "react";
 import { getInstalledGames } from "./steam";
 import { DialogButton, DropdownItem, Focusable, ModalRoot, TextField, showModal } from "./ui";
@@ -130,7 +130,7 @@ function RenameModal({ title, currentName, onResult, closeModal }: RenameProps) 
   );
 }
 
-export function promptLinkName(currentName: string, title = "Rename shortcut profile"): Promise<string | null> {
+export function promptLinkName(currentName: string, title = "Rename Game Link"): Promise<string | null> {
   return new Promise((resolve) => {
     showModal(<RenameModal title={title} currentName={currentName} onResult={resolve} />, window);
   });

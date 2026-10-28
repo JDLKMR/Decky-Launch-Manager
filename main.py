@@ -119,7 +119,7 @@ DEFAULTS = {
     # Keep a one-time .bak of each script the first time the plugin edits it.
     "backup": True,
     # appid (as a string) -> {name, enabled, lastProfile, lastLinkId, links, defaultName}.
-    # links: [{id, targetAppId, name, position?}] are a game's shortcut profiles. Which script
+    # links: [{id, targetAppId, name, position?}] are a game's game links. Which script
     # profiles a game offers (their names and order) always comes straight from its own
     # script's PROFILE_NAMES table, re-read on every launch, so none of that is stored.
     "gameProfiles": {},

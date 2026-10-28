@@ -1,6 +1,5 @@
-import { fetchSgdbArt, forgetGameProfile, getSettings, listScripts, removeGame, setGameProfile, setRomGame, setScriptGame } from "./api";
-import { promptPickGame } from "./LinkModals";
-import { newLinkId } from "./links";
+import { fetchSgdbArt, getSettings, listScripts, removeGame, setGameProfile, setRomGame, setScriptGame } from "./api";
+import { GameSettingsModal } from "./GameSettingsModal";
 import {
   ActionMenuModal,
   ConfirmModal,
@@ -134,6 +133,7 @@ async function chooseRom(gameName: string, apply: (profile: Profile, romPath: st
     }
     showModal(
       <FileBrowserModal
+        gameName={gameName}
         startPath={s.browserDir}
         onSelect={(romPath, chooseProfile) => {
           const romName = basename(romPath);
@@ -191,6 +191,7 @@ export async function startScriptFlow(game: Game, onSettings?: OnSettings) {
     showModal(
       <ScriptPickerModal
         title="Choose Script File"
+        gameName={game.name}
         scripts={scripts}
         where={where}
         emptyText={
@@ -216,44 +217,13 @@ export async function startScriptFlow(game: Game, onSettings?: OnSettings) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Add shortcut profile                                                 */
-/* ------------------------------------------------------------------ */
-/**
- * Pick the game a new shortcut profile opens (and what it is called in the launch
- * prompt), then add it to this game's launch prompt.
- */
-export async function startProfileFlow(game: Game, onSettings?: OnSettings) {
-  try {
-    const picked = await promptPickGame({
-      title: "Add Shortcut Profile",
-      description: "Pick a game for this one's launch prompt to open. It will show up alongside the other profiles.",
-      confirmLabel: "Add",
-      askName: true,
-      excludeAppId: game.appid,
-    });
-    if (!picked) return;
-    // Read the latest links from the cache, so two quick additions can't overwrite each other.
-    const links = gameProfile(game.appid)?.links ?? [];
-    const next = await setGameProfile(game.appid, {
-      name: game.name,
-      links: [...links, { id: newLinkId(), targetAppId: picked.appId, name: picked.name }],
-    });
-    onSettings?.(next);
-    toast(`Shortcut profile "${picked.name}" added to ${game.name}`);
-  } catch (e) {
-    console.error("[Launch Manager] add shortcut profile failed", e);
-    toast(`Could not add a shortcut profile to ${game.name}`);
-  }
-}
-
-/* ------------------------------------------------------------------ */
 /* Clear launch options                                                 */
 /* ------------------------------------------------------------------ */
 /**
  * Yes/No confirmation, then clear the game's launch fields and drop it from the
  * ROM and script games lists. The one clear flow: the trash buttons in the Decky menu and
- * "Clear launch options" on game pages both go through here. A game's shortcut
- * profiles are not launch options, so they are kept.
+ * "Clear Launch Options" on game pages both go through here. A game's game links
+ * are not launch options, so they are kept.
  */
 export function confirmClear(
   game: { appid: number; name: string; kind: Game["kind"] },
@@ -269,7 +239,7 @@ export function confirmClear(
           Clear the launch options for <b>{game.name}</b>?
           {kept > 0 && (
             <div style={{ ...subStyle, fontSize: "0.85em", marginTop: "6px" }}>
-              Its {kept} shortcut profile{kept === 1 ? "" : "s"} will be kept.
+              Its {kept} game link{kept === 1 ? "" : "s"} will be kept.
             </div>
           )}
         </>
@@ -292,24 +262,24 @@ export function confirmClear(
 }
 
 /**
- * For a game that is only in the list because it has shortcut profiles (no ROM, no
- * script): there are no launch options to clear, so this removes the profiles instead.
+ * The trash button in the Linked Games list: removes all of a game's game links. Its launch
+ * options and its other launch prompt settings (such as whether it prompts) are left alone.
  */
-export function confirmRemoveProfiles(game: { appid: number; name: string }, onSettings?: OnSettings) {
+export function confirmRemoveLinks(game: { appid: number; name: string }, onSettings?: OnSettings) {
   showModal(
     <ConfirmModal
-      title="Remove Shortcut Profiles?"
+      title="Remove Game Links?"
       body={
         <>
-          Remove all shortcut profiles from <b>{game.name}</b>? Its launch options are not changed.
+          Remove all game links from <b>{game.name}</b>? Its launch options are not changed.
         </>
       }
       onConfirm={async () => {
         try {
-          const next = await forgetGameProfile(game.appid);
+          const next = await setGameProfile(game.appid, { links: [], lastLinkId: null });
           onSettings?.(next);
         } catch (e) {
-          console.error("[Launch Manager] remove shortcut profiles failed", e);
+          console.error("[Launch Manager] remove game links failed", e);
           toast(`Could not update ${game.name}`);
         }
       }}
@@ -326,7 +296,7 @@ export function openLaunchMenu(game: Game) {
       game={game}
       onRom={() => startRomFlow(game)}
       onScript={() => startScriptFlow(game)}
-      onProfile={() => startProfileFlow(game)}
+      onPromptSettings={() => showModal(<GameSettingsModal appId={String(game.appid)} fallbackName={game.name} />)}
       onClear={() => confirmClear(game, undefined, true)}
     />,
   );

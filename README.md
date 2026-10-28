@@ -1,5 +1,5 @@
 # Decky Launch Manager
-A Decky Loader plugin that can assign launch paths/arguments to games according to configured profiles, assign shell script file paths, and prompt for a profile when a script-bound game (or a game with shortcut profiles) is launched.
+A Decky Loader plugin that can add games with ROM paths/arguments, use shell scripts to allow profile selection upon launch, and create links between games.
 
 Combines my previous ROM Manager, Script Assigner and Profile Launcher plugins, as they all deal with how a game launches.
 
@@ -12,9 +12,11 @@ Combines my previous ROM Manager, Script Assigner and Profile Launcher plugins, 
 - Includes 16 pre-configured profiles for several emulated consoles (Most are standard, but the 3DS one uses my own niche configuration)
 - Add a shell script's path to a game's launch options
 - Define one or more directories to search for shell scripts in, including the per-directory option to toggle subdirectories
-- Includes the option to add a shortcut button to game pages (next to the Controller button) with: Choose ROM file, Choose script file, Add shortcut profile, and Clear launch options
+- Includes the option to add a shortcut button to game pages (next to the Controller button) with: Choose ROM File, Choose Script File, Launch Prompt Settings, and Clear Launch Options
 - Scan the library for games with matching ROM profile and shell script paths, and clear them from the dropdown lists if desired
 - Exclude specific shell script-bound games via `.sh` filename keywords/patterns (applies to both the scan and the launch prompt)
+- Change the variable name looked for in scripts
+- Make backups of scripts upon write
 
 ### Launch Prompt
 When you launch a game whose Target or Launch Options point at a `.sh` script, a prompt lets you pick which profile to launch with. This expects the script to use "profiles": meaning it does different things depending on the value of a variable (default `PROFILE`). The list of profiles is read from the script's own table every time:
@@ -38,9 +40,9 @@ A profile can also be passed without editing the script, through the game's laun
 PROFILE="${PROFILE:-1}"
 ```
 
-**Shortcut profiles** are entries in a game's launch prompt that, instead of running its script, open another Steam shortcut of your choosing. Add them from a game page's button, the Add Shortcut Profile button, or a game's Game Settings. Steam Input is shared across all script profiles of a game (but not shortcut profiles, since those are different games in Steam). Games that only have shortcut profiles (no script of their own) are listed under Script Games.
+**Game links** are entries in a game's launch prompt that, instead of running its script, open another Steam shortcut.
 
-Other options: change the variable's name, whether newly detected games prompt by default, and keeping a one-time backup of each script the plugin edits.
+Note that Steam Input is shared across all script profiles of a game (with the exception of game links, since those are different games in Steam entirely).
 
 ## Building
 ```

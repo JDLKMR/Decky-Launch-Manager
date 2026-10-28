@@ -1,6 +1,6 @@
 import { definePlugin, routerHook } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
-import { FaChevronDown, FaChevronRight, FaEdit, FaEye, FaEyeSlash, FaTerminal, FaTrash, FaUserCog } from "react-icons/fa";
+import { FaChevronDown, FaChevronRight, FaEdit, FaEye, FaEyeSlash, FaListOl, FaTerminal, FaTrash } from "react-icons/fa";
 import {
   addDirectory,
   applyScan,
@@ -14,7 +14,7 @@ import {
   setSgdbKey,
   setShowGameButton,
 } from "./api";
-import { confirmClear, confirmRemoveProfiles, startNewRomFlow, startRomFlow, startScriptFlow } from "./flow";
+import { confirmClear, confirmRemoveLinks, startNewRomFlow, startRomFlow, startScriptFlow } from "./flow";
 import { setGameButtonEnabled, GameButtonHost } from "./GameButton";
 import { GameSettingsModal } from "./GameSettingsModal";
 import { registerLaunchInterceptor } from "./interceptor";
@@ -76,23 +76,48 @@ function Chevron({ open, children }: { open: boolean; children: any }) {
   );
 }
 
+/**
+ * A thin line between groups of rows in the Games section. The buttons there have no separators of
+ * their own, so the lines show up only where this is placed (in the same shade as Steam's own
+ * separators, when that can be read).
+ */
+function Divider() {
+  const line = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    try {
+      const el = line.current;
+      const doc = el?.ownerDocument;
+      const native = doc?.querySelector('[class*="WithBottomSeparatorStandard"]');
+      const view = doc?.defaultView ?? window;
+      const shade = native ? view.getComputedStyle(native, "::after").backgroundColor : "";
+      if (el && shade && shade !== "rgba(0, 0, 0, 0)" && shade !== "transparent") el.style.backgroundColor = shade;
+    } catch {
+      /* the default shade stays */
+    }
+  });
+  return (
+    <PanelSectionRow>
+      <div ref={line} style={{ height: "1px", margin: "4px 0", backgroundColor: "rgba(255, 255, 255, 0.1)" }} />
+    </PanelSectionRow>
+  );
+}
+
 /** One game in a games list. */
 interface Row {
   appid: number;
   name: string;
-  /** The second line: the ROM / script file, and/or how many shortcut profiles it has. */
+  /** The second line: the ROM / script file, and/or how many game links it has. */
   sub: string;
   kind: GameKind;
   list: ListKind;
   /** ROM games: the ROM profile group it sits under. */
   group?: string;
-  /** In the script list only because it has shortcut profiles (no script of its own). */
-  linkOnly?: boolean;
 }
 
 /**
- * One game in a games list: its name, a second line, and three square buttons:
- * Game Settings (the launch prompt), Change (pick another ROM / script) and Remove.
+ * One game in a games list: its name, a second line, and up to three square buttons:
+ * Change (pick another ROM / script; not in the Linked Games list), Launch Prompt Settings
+ * and Remove.
  */
 function GameRow({
   row,
@@ -104,7 +129,7 @@ function GameRow({
   row: Row;
   settingsRef: (el: HTMLDivElement | null) => void;
   onSettings: () => void;
-  onChange: () => void;
+  onChange?: () => void;
   onRemove: () => void;
 }) {
   return (
@@ -118,14 +143,16 @@ function GameRow({
           <div style={ellipsis}>{row.name}</div>
           <div style={{ ...subStyle, ...ellipsis, wordBreak: undefined }}>{row.sub}</div>
         </div>
+        {onChange && (
+          <DialogButton style={rowButton} onClick={onChange}>
+            <FaEdit size={14} />
+          </DialogButton>
+        )}
         <div ref={settingsRef} style={{ display: "contents" }}>
           <DialogButton style={rowButton} onClick={onSettings}>
-            <FaUserCog size={14} />
+            <FaListOl size={14} />
           </DialogButton>
         </div>
-        <DialogButton style={rowButton} onClick={onChange}>
-          <FaEdit size={14} />
-        </DialogButton>
         <DialogButton style={rowButton} onClick={onRemove}>
           <FaTrash size={13} />
         </DialogButton>
@@ -139,6 +166,7 @@ function Content() {
   // Coming back from a game's settings, the list that row was in starts open.
   const [romOpen, setRomOpen] = useState(() => pendingReturnTarget()?.list === "rom");
   const [scriptOpen, setScriptOpen] = useState(() => pendingReturnTarget()?.list === "script");
+  const [linkedOpen, setLinkedOpen] = useState(() => pendingReturnTarget()?.list === "link");
   const [profilesOpen, setProfilesOpen] = useState(false);
   // ROM profile groups under "ROM Games" that are expanded (all start collapsed).
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
@@ -147,8 +175,9 @@ function Content() {
   });
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState("");
-  const [restoreFocusId, setRestoreFocusId] = useState<number | null>(null);
-  const settingsButtons = useRef(new Map<number, HTMLDivElement>());
+  // Which row's settings button to refocus ("list:appid": a game can be in more than one list).
+  const [restoreFocusKey, setRestoreFocusKey] = useState<string | null>(null);
+  const settingsButtons = useRef(new Map<string, HTMLDivElement>());
   // What's typed in the script variable box (null = show the saved value).
   const [varText, setVarText] = useState<string | null>(null);
   // Same for the SteamGridDB API key, which is hidden unless the eye button is pressed (and always starts hidden).
@@ -176,10 +205,12 @@ function Content() {
         setRomOpen(true);
         const group = t.group;
         if (group) setOpenGroups((prev) => new Set(prev).add(group));
-      } else {
+      } else if (t.list === "script") {
         setScriptOpen(true);
+      } else {
+        setLinkedOpen(true);
       }
-      setRestoreFocusId(t.appid);
+      setRestoreFocusKey(`${t.list}:${t.appid}`);
     };
     restore();
     return onGameSettingsClosed(restore);
@@ -221,9 +252,9 @@ function Content() {
   });
 
   useEffect(() => {
-    if (restoreFocusId === null) return;
+    if (restoreFocusKey === null) return;
     const focusRow = () => {
-      const row = settingsButtons.current.get(restoreFocusId);
+      const row = settingsButtons.current.get(restoreFocusKey);
       const target =
         row?.querySelector<HTMLElement>("button") ??
         row?.querySelector<HTMLElement>("[role='button']") ??
@@ -237,10 +268,10 @@ function Content() {
     const timers = [
       setTimeout(focusRow, 150),
       setTimeout(focusRow, 600),
-      setTimeout(() => setRestoreFocusId(null), 800),
+      setTimeout(() => setRestoreFocusKey(null), 800),
     ];
     return () => timers.forEach(clearTimeout);
-  }, [restoreFocusId, romOpen, scriptOpen]);
+  }, [restoreFocusKey, romOpen, scriptOpen, linkedOpen]);
 
   if (!s) return <PanelSection>Loading…</PanelSection>;
 
@@ -251,7 +282,7 @@ function Content() {
   const describe = (base: string, appid: number) => {
     const n = linkCount(appid);
     if (!n) return base;
-    const links = `${n} shortcut profile${n === 1 ? "" : "s"}`;
+    const links = `${n} game link${n === 1 ? "" : "s"}`;
     return base ? `${base} · ${links}` : links;
   };
 
@@ -272,8 +303,6 @@ function Content() {
   }
   const groupNames = [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }));
 
-  // Script games, plus games that are only here for their shortcut profiles.
-  const listed = new Set<number>([...s.romGames.map((g) => g.appid), ...s.scriptGames.map((g) => g.appid)]);
   const scriptRows: Row[] = s.scriptGames.map((a) => ({
     appid: a.appid,
     name: nameOf(a),
@@ -281,19 +310,22 @@ function Content() {
     kind: a.kind,
     list: "script",
   }));
+  scriptRows.sort(byName);
+
+  // Linked games: every game with at least one game link, whether or not it is also in the ROM or script list.
+  const linkedRows: Row[] = [];
   for (const [key, cfg] of Object.entries(s.gameProfiles)) {
     const appid = Number(key);
-    if (listed.has(appid) || !cfg.links?.length) continue;
-    scriptRows.push({
+    if (!cfg.links?.length) continue;
+    linkedRows.push({
       appid,
       name: liveName(appid) ?? (cfg.name || `App ${appid}`),
       sub: describe("", appid),
       kind: getGameByAppId(appid)?.kind ?? "steam",
-      list: "script",
-      linkOnly: true,
+      list: "link",
     });
   }
-  scriptRows.sort(byName);
+  linkedRows.sort(byName);
 
   const toggleGroup = (group: string) =>
     setOpenGroups((prev) => {
@@ -310,22 +342,24 @@ function Content() {
     showModal(<GameSettingsModal appId={String(row.appid)} fallbackName={row.name} />, window);
   };
 
-  // Change: pick another ROM (ROM games) or script (script games).
+  // Change: pick another ROM (ROM games) or script (script games). Linked games have nothing to change.
   const changeGame = (row: Row) => (row.list === "rom" ? startRomFlow(gameOf(row), setS) : startScriptFlow(gameOf(row), setS));
 
+  // Remove: clears a ROM or script game's launch options; in Linked Games it removes the game's game links instead.
   const removeGame = (row: Row) =>
-    row.linkOnly ? confirmRemoveProfiles(gameOf(row), setS) : confirmClear(gameOf(row), setS);
+    row.list === "link" ? confirmRemoveLinks(gameOf(row), setS) : confirmClear(gameOf(row), setS);
 
   const renderRow = (row: Row) => (
     <GameRow
       key={row.appid}
       row={row}
       settingsRef={(el) => {
-        if (el) settingsButtons.current.set(row.appid, el);
-        else settingsButtons.current.delete(row.appid);
+        const key = `${row.list}:${row.appid}`;
+        if (el) settingsButtons.current.set(key, el);
+        else settingsButtons.current.delete(key);
       }}
       onSettings={() => openGameSettings(row)}
-      onChange={() => changeGame(row)}
+      onChange={row.list === "link" ? undefined : () => changeGame(row)}
       onRemove={() => removeGame(row)}
     />
   );
@@ -376,8 +410,8 @@ function Content() {
     );
   };
 
-  /* ---- Add Shortcut Profile (any game): opens that game's settings ------ */
-  const startAddProfile = () => {
+  /* ---- Add Game Link (any game): opens that game's Launch Prompt Settings -- */
+  const startAddLink = () => {
     const games = getInstalledGames();
     if (games.length === 0) {
       toast("No installed games found.");
@@ -385,7 +419,7 @@ function Content() {
     }
     showModal(
       <GamePickerModal
-        kind="profile"
+        kind="link"
         games={games}
         current={{}}
         onPick={(game) => showModal(<GameSettingsModal appId={String(game.appid)} fallbackName={game.name} />, window)}
@@ -441,28 +475,20 @@ function Content() {
     <>
       <PanelSection title="Games">
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={startAddRom}>
-            Add ROM
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={startAddScript}>
-            Add Script
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={startAddProfile}>
-            Add Shortcut Profile
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" disabled={scanning} onClick={doScan}>
+          <ButtonItem layout="below" bottomSeparator="none" disabled={scanning} onClick={doScan}>
             {scanMsg || "Scan Library"}
           </ButtonItem>
         </PanelSectionRow>
 
+        <Divider />
+
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => setRomOpen(!romOpen)}>
+          <ButtonItem layout="below" bottomSeparator="none" onClick={startAddRom}>
+            Add ROM
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" bottomSeparator="none" onClick={() => setRomOpen(!romOpen)}>
             <Chevron open={romOpen}>ROM Games ({s.romGames.length})</Chevron>
           </ButtonItem>
         </PanelSectionRow>
@@ -478,7 +504,7 @@ function Content() {
             return (
               <div key={group}>
                 <PanelSectionRow>
-                  <ButtonItem layout="below" onClick={() => toggleGroup(group)}>
+                  <ButtonItem layout="below" bottomSeparator="none" onClick={() => toggleGroup(group)}>
                     <div style={{ paddingLeft: "14px" }}>
                       <Chevron open={groupOpen}>
                         {group} ({groupGames.length})
@@ -491,17 +517,43 @@ function Content() {
             );
           })}
 
+        <Divider />
+
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => setScriptOpen(!scriptOpen)}>
+          <ButtonItem layout="below" bottomSeparator="none" onClick={startAddScript}>
+            Add Script
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" bottomSeparator="none" onClick={() => setScriptOpen(!scriptOpen)}>
             <Chevron open={scriptOpen}>Script Games ({scriptRows.length})</Chevron>
           </ButtonItem>
         </PanelSectionRow>
         {scriptOpen && scriptRows.length === 0 && (
           <PanelSectionRow>
-            <div style={{ opacity: 0.7 }}>No script games yet. Use Add Script, Add Shortcut Profile or Scan.</div>
+            <div style={{ opacity: 0.7 }}>No script games yet. Use Add Script or Scan.</div>
           </PanelSectionRow>
         )}
         {scriptOpen && scriptRows.map(renderRow)}
+
+        <Divider />
+
+        <PanelSectionRow>
+          <ButtonItem layout="below" bottomSeparator="none" onClick={startAddLink}>
+            Add Game Link
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" bottomSeparator="none" onClick={() => setLinkedOpen(!linkedOpen)}>
+            <Chevron open={linkedOpen}>Linked Games ({linkedRows.length})</Chevron>
+          </ButtonItem>
+        </PanelSectionRow>
+        {linkedOpen && linkedRows.length === 0 && (
+          <PanelSectionRow>
+            <div style={{ opacity: 0.7 }}>No linked games yet. Use Add Game Link or a game's page button.</div>
+          </PanelSectionRow>
+        )}
+        {linkedOpen && linkedRows.map(renderRow)}
       </PanelSection>
 
       <PanelSection title="ROM profiles">

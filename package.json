@@ -1,7 +1,7 @@
 {
   "name": "launch-manager",
-  "version": "1.1.0",
-  "description": "Add ROM launch options, assign launch scripts, add shortcut profiles, or clear launch options for Steam and non-Steam games from one game-page button, with a launch-time profile prompt.",
+  "version": "1.1.1",
+  "description": "Add ROM launch options, assign launch scripts, add game links, or clear launch options for Steam and non-Steam games from one game-page button, with a launch-time profile prompt.",
   "type": "module",
   "scripts": {
     "build": "rollup -c",

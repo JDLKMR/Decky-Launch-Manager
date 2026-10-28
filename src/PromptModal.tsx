@@ -1,4 +1,4 @@
-// The prompt shown when a game with script profiles and/or shortcut profiles is launched.
+// The prompt shown when a game with script profiles and/or game links is launched.
 import { useRef, useState } from "react";
 import type { PromptEntry } from "./links";
 import { DialogButton, Focusable, ModalRoot, ToggleField, showModal } from "./ui";
@@ -11,7 +11,7 @@ export interface ProfileChoice {
 }
 
 interface Props {
-  /** Script profiles and shortcut profiles, already merged and ordered. */
+  /** Script profiles and game links, already merged and ordered. */
   entries: PromptEntry[];
   /** Key of the entry to pre-select, or null if none applies. */
   defaultKey: string | null;

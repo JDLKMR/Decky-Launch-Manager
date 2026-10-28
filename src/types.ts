@@ -34,7 +34,7 @@ export interface ScriptDir {
 }
 
 /**
- * A shortcut profile: an entry in a game's launch prompt that opens another
+ * A game link: an entry in a game's launch prompt that opens another
  * Steam or non-Steam game instead of running this game's script.
  */
 export interface ShortcutLink {
@@ -54,7 +54,7 @@ export interface GameProfile {
   /** Prompt for a profile when this game launches. */
   enabled: boolean;
   lastProfile: number;
-  /** Set when the last thing picked was a shortcut profile rather than a script profile. */
+  /** Set when the last thing picked was a game link rather than a script profile. */
   lastLinkId: string | null;
   links: ShortcutLink[];
   /** This game's own name for the Default entry (empty = "Default"). */

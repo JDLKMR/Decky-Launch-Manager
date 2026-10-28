@@ -8,7 +8,7 @@
       "utility",
       "emulation"
     ],
-    "description": "Add ROM launch options (ROM profiles), assign launch .sh scripts, add shortcut profiles, or clear launch options for any Steam or non-Steam game from one button. Also prompts for a script profile when a script-bound game launches.",
+    "description": "Add ROM launch options (ROM profiles), assign launch .sh scripts, add game links, or clear launch options for any Steam or non-Steam game from one button. Also prompts for a script profile when a script-bound game launches.",
     "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/decky-plugin-template"
   }
 }

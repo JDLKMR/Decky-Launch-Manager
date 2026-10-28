@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FaArrowUp, FaCheck, FaFile, FaFolder, FaGamepad, FaLink, FaPlus, FaTerminal, FaTrash } from "react-icons/fa";
+import { FaArrowUp, FaCheck, FaFile, FaFolder, FaGamepad, FaListOl, FaPlus, FaTerminal, FaTrash } from "react-icons/fa";
 import { deleteProfile, getSettings, listDir, saveProfile, searchSgdbGames, setExclusions } from "./api";
 import { describeFileTypes, normalizeFileTypes } from "./profiles";
 import type { DirListing, Game, Profile, ScriptFile, Settings, SgdbGame } from "./types";
@@ -47,14 +47,14 @@ export function ActionMenuModal({
   game,
   onRom,
   onScript,
-  onProfile,
+  onPromptSettings,
   onClear,
   closeModal,
 }: {
   game: Game;
   onRom: () => void;
   onScript: () => void;
-  onProfile: () => void;
+  onPromptSettings: () => void;
   onClear: () => void;
 } & CloseProps) {
   const choose = (fn: () => void) => () => {
@@ -71,27 +71,27 @@ export function ActionMenuModal({
           <DialogButton style={itemStyle} onClick={choose(onRom)}>
             <div style={rowStyle}>
               <FaGamepad />
-              <span style={ellipsis}>Choose ROM file</span>
+              <span style={ellipsis}>Choose ROM File</span>
             </div>
           </DialogButton>
         )}
         <DialogButton style={itemStyle} onClick={choose(onScript)}>
           <div style={rowStyle}>
             <FaTerminal />
-            <span style={ellipsis}>Choose script file</span>
+            <span style={ellipsis}>Choose Script File</span>
           </div>
         </DialogButton>
-        {/* A shortcut profile is an entry in this game's launch prompt that opens another game. */}
-        <DialogButton style={itemStyle} onClick={choose(onProfile)}>
+        {/* Opens this game's Launch Prompt Settings: its launch prompt and the game links it offers. */}
+        <DialogButton style={itemStyle} onClick={choose(onPromptSettings)}>
           <div style={rowStyle}>
-            <FaLink />
-            <span style={ellipsis}>Add shortcut profile</span>
+            <FaListOl />
+            <span style={ellipsis}>Launch Prompt Settings</span>
           </div>
         </DialogButton>
         <DialogButton style={itemStyle} onClick={choose(onClear)}>
           <div style={rowStyle}>
             <FaTrash />
-            <span style={ellipsis}>Clear launch options</span>
+            <span style={ellipsis}>Clear Launch Options</span>
           </div>
         </DialogButton>
       </DialogBody>
@@ -394,10 +394,13 @@ function useListing(startPath: string) {
 }
 
 export function FileBrowserModal({
+  gameName,
   startPath,
   onSelect,
   closeModal,
 }: {
+  /** The game the ROM is for, shown under the header. */
+  gameName?: string;
   startPath: string;
   /** `chooseProfile` is true when the toggle asks to pick the ROM profile by hand. */
   onSelect: (path: string, chooseProfile: boolean) => void;
@@ -410,6 +413,7 @@ export function FileBrowserModal({
     <ModalRoot onCancel={closeModal} closeModal={closeModal}>
       <DialogHeader>Choose ROM File</DialogHeader>
       <DialogBody>
+        {gameName && <div style={{ opacity: 0.7, fontSize: "0.9em", marginBottom: "12px" }}>{gameName}</div>}
         <div style={{ marginBottom: "10px" }}>
           <ToggleField
             label="Choose different ROM profile on selection"
@@ -565,6 +569,7 @@ export function ProfilePickerModal({
 /* ------------------------------------------------------------------ */
 export function ScriptPickerModal({
   title,
+  gameName,
   scripts,
   emptyText,
   where,
@@ -572,6 +577,8 @@ export function ScriptPickerModal({
   closeModal,
 }: {
   title: string;
+  /** The game the script is for, shown under the header. */
+  gameName?: string;
   scripts: ScriptFile[];
   emptyText: string;
   where: (s: ScriptFile) => string | undefined;
@@ -581,6 +588,7 @@ export function ScriptPickerModal({
     <ModalRoot onCancel={closeModal} closeModal={closeModal}>
       <DialogHeader>{title}</DialogHeader>
       <DialogBody>
+        {gameName && <div style={{ opacity: 0.7, fontSize: "0.9em", marginBottom: "12px" }}>{gameName}</div>}
         {scripts.length === 0 && <div style={{ opacity: 0.7 }}>{emptyText}</div>}
         {scripts.map((sc) => (
           <DialogButton
@@ -611,20 +619,20 @@ export function GamePickerModal({
   closeModal,
 }: {
   /** What is being assigned: decides the wording of the modal. */
-  kind: "rom" | "script" | "profile";
+  kind: "rom" | "script" | "link";
   games: Game[];
   /** appid -> file name currently assigned (a ROM or a script, matching `kind`). */
   current: Record<number, string>;
   onPick: (game: Game) => void;
 } & CloseProps) {
   const noun = kind === "rom" ? "ROM" : "script";
-  const heading = kind === "rom" ? "Add ROM" : kind === "script" ? "Add Script" : "Add Shortcut Profile";
+  const heading = kind === "rom" ? "Add ROM" : kind === "script" ? "Add Script" : "Add Game Link";
   const prompt =
     kind === "rom"
       ? "Choose the non-Steam game to assign a ROM to."
       : kind === "script"
         ? "Choose the game to assign a launch script to."
-        : "Choose the game whose launch prompt should offer shortcut profiles.";
+        : "Choose the game whose launch prompt should offer game links.";
   const options = useMemo(() => games.map((g) => ({ data: g.appid, label: g.name })), [games]);
   const [selected, setSelected] = useState<number | null>(null);
   const settled = useRef(false);

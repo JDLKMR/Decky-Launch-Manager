@@ -1,5 +1,5 @@
 // Per-game launch prompt settings, opened from a games list row's settings button.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FaPen, FaTrash, FaUndo } from "react-icons/fa";
 import { resolveScript, setGameProfile } from "./api";
 import { promptLinkName, promptPickGame } from "./LinkModals";
@@ -26,7 +26,7 @@ const iconButtonStyle = {
  * re-read fresh every time this opens (same as every launch), so there's
  * nothing to edit for those; this shows the prompt as it will appear. What's
  * configurable here: whether prompting happens at all, and this game's
- * shortcut profiles.
+ * game links.
  */
 export function GameSettingsModal({
   appId,
@@ -39,7 +39,7 @@ export function GameSettingsModal({
 }) {
   const numeric = Number(appId);
   const initial = gameProfile(appId);
-  // ROM games only ever offer shortcut profiles: their Target may itself be a .sh (the 3DS profile) that isn't a profile script.
+  // ROM games only ever offer game links: their Target may itself be a .sh (the 3DS profile) that isn't a profile script.
   const isRom = !!snapshot()?.romGames.some((g) => g.appid === numeric);
 
   const [config, setConfig] = useState<GameProfile | undefined>(initial);
@@ -78,10 +78,29 @@ export function GameSettingsModal({
     };
   }, [appId]);
 
+  // The modal opens before the game's details are looked up, so the first thing on screen to take
+  // focus is the Close button at the bottom. Once the rest has appeared, move focus to the top.
+  const toggleBox = useRef<HTMLDivElement>(null);
+  const closeRow = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!ready) return;
+    const focusTop = () => {
+      const box = toggleBox.current;
+      const active = box?.ownerDocument.activeElement;
+      // Leave focus alone if the person has already moved it somewhere else.
+      if (active && active !== box?.ownerDocument.body && !closeRow.current?.contains(active)) return;
+      box?.querySelector<HTMLElement>("[tabindex]")?.focus();
+    };
+    const timers = [setTimeout(focusTop, 0), setTimeout(focusTop, 150)];
+    return () => timers.forEach(clearTimeout);
+  }, [ready]);
+
   const links = config?.links ?? [];
   const entries = buildPromptEntries(profiles, links, config?.defaultName);
   const hasCustomDefaultName = !!config?.defaultName?.trim();
   const minPosition = minLinkPosition(profiles);
+  // The "as it will appear" preview only means something once there is a script or a game link to preview.
+  const hasPromptSource = !!scriptPath || links.length > 0;
 
   const update = async (patch: Partial<GameProfile>) => {
     const next = await setGameProfile(numeric, { ...(gameProfile(appId) ? {} : { name }), ...patch });
@@ -95,7 +114,7 @@ export function GameSettingsModal({
 
   const addLink = async () => {
     const picked = await promptPickGame({
-      title: "Add shortcut profile",
+      title: "Add Game Link",
       description: "Pick a game for this one's launch prompt to open. It will show up alongside the other profiles.",
       confirmLabel: "Add",
       askName: true,
@@ -130,8 +149,8 @@ export function GameSettingsModal({
       }),
     );
 
-  // Numbers a shortcut profile can take. With no script profiles, Default
-  // holds number 1, so they start at 2.
+  // Positions a game link can take. With no script profiles, Default
+  // holds position 1, so they start at 2.
   const positionOptions = [
     { data: 0, label: "Last (default)" },
     ...Array.from({ length: Math.max(0, entries.length - minPosition + 1) }, (_, i) => ({
@@ -143,7 +162,7 @@ export function GameSettingsModal({
   return (
     <ModalRoot onCancel={closeModal} onEscKeypress={closeModal}>
       <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-        <div style={{ fontSize: "1.4em", fontWeight: "bold" }}>Game Settings</div>
+        <div style={{ fontSize: "1.4em", fontWeight: "bold" }}>Launch Prompt Settings</div>
         <div style={{ opacity: 0.7, fontSize: "0.9em" }}>
           {name}
           {scriptPath ? ` · ${basename(scriptPath)}` : ""}
@@ -154,7 +173,7 @@ export function GameSettingsModal({
 
       {ready && (
         <>
-          <div style={{ marginTop: "16px" }}>
+          <div ref={toggleBox} style={{ marginTop: "16px" }}>
             <ToggleField
               label="Prompt for a profile on launch"
               checked={config?.enabled ?? snapshot()?.askByDefault ?? true}
@@ -162,7 +181,9 @@ export function GameSettingsModal({
             />
           </div>
 
-          <div style={{ marginTop: "16px", marginBottom: "4px", opacity: 0.7 }}>Launch prompt as it will appear</div>
+          {hasPromptSource && (
+            <div style={{ marginTop: "16px", marginBottom: "4px", opacity: 0.7 }}>Launch prompt as it will appear</div>
+          )}
 
           {entries.length > 0 ? (
             <Focusable style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
@@ -186,21 +207,21 @@ export function GameSettingsModal({
                   <div key={entry.key} style={{ padding: "6px 0", opacity: 0.9 }}>
                     {index + 1}. {entry.label}
                     {entry.kind === "link" && (
-                      <span style={{ opacity: 0.5, fontSize: "0.85em", marginLeft: "8px" }}>shortcut</span>
+                      <span style={{ opacity: 0.5, fontSize: "0.85em", marginLeft: "8px" }}>game link</span>
                     )}
                   </div>
                 ),
               )}
             </Focusable>
           ) : (
-            <div style={{ opacity: 0.8 }}>
+            <div style={{ marginTop: hasPromptSource ? undefined : "16px", opacity: 0.8 }}>
               {scriptPath
-                ? "No PROFILE_NAMES table found yet. Add one to this script, or add a shortcut profile below, to enable the launch prompt."
-                : "This game doesn't use a profile script. Add a shortcut profile below and its launch prompt will offer the game itself first, then your shortcut profiles."}
+                ? "No PROFILE_NAMES table found yet. Add one to this script, or add a game link below, to enable the launch prompt."
+                : "This game doesn't use a profile script. Add a game link below and its launch prompt will offer the game itself first, then your game links."}
             </div>
           )}
 
-          <div style={{ marginTop: "16px", marginBottom: "4px", opacity: 0.7 }}>Shortcut profiles</div>
+          <div style={{ marginTop: "16px", marginBottom: "4px", opacity: 0.7 }}>Game Links</div>
 
           {links.map((link) => {
             const target = getOverview(link.targetAppId);
@@ -222,7 +243,7 @@ export function GameSettingsModal({
                   </DialogButton>
                 </Focusable>
                 <DropdownItem
-                  label="Number in launch prompt"
+                  label="Position in launch prompt"
                   rgOptions={positionOptions}
                   selectedOption={shownPosition}
                   strDefaultLabel={shownPosition ? String(shownPosition) : "Last (default)"}
@@ -232,11 +253,11 @@ export function GameSettingsModal({
             );
           })}
 
-          <DialogButton onClick={() => void addLink()}>Add shortcut profile...</DialogButton>
+          <DialogButton onClick={() => void addLink()}>Add Game Link...</DialogButton>
         </>
       )}
 
-      <Focusable style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
+      <Focusable ref={closeRow} style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
         <DialogButton onClick={closeModal}>Close</DialogButton>
       </Focusable>
     </ModalRoot>

@@ -1,6 +1,6 @@
 // Intercepts game launches to show the profile prompt: for a game whose launch
 // options / target point at a profile script (.sh with a PROFILE_NAMES table),
-// and/or a game with shortcut profiles.
+// and/or a game with game links.
 import { removeGame, resolveScript, setGameProfile, setScriptGame, writeProfile } from "./api";
 import { withProfileEnv, withoutProfileEnv } from "./launchOptions";
 import { type LinkEntry, buildPromptEntries, hasLinks, pickDefaultKey } from "./links";
@@ -81,7 +81,7 @@ async function onGameActionStart(rawGameActionId: string, action: string) {
   const s = snapshot();
   const config = gameProfile(appId);
   const links = hasLinks(config);
-  // ROM games only ever prompt for their shortcut profiles: their Target may itself
+  // ROM games only ever prompt for their game links: their Target may itself
   // be a .sh (the 3DS profile) that isn't a profile script.
   const isRom = !!s?.romGames.some((g) => g.appid === appid);
   const listed = s?.scriptGames.find((g) => g.appid === appid);
@@ -91,7 +91,7 @@ async function onGameActionStart(rawGameActionId: string, action: string) {
     // Prompting switched off: do nothing.
     if (!(config?.enabled ?? s?.askByDefault ?? true)) return;
 
-    // A script game, a game with shortcut profiles, or both: stop the launch
+    // A script game, a game with game links, or both: stop the launch
     // immediately, then take our time.
     busy.add(appId);
     const gameId = getGameId(appid);
@@ -207,13 +207,13 @@ async function handleLaunch(appId: string, knownGameId?: string) {
     return;
   }
 
-  // The shortcut profiles are still worth offering, but a script that's
+  // The game links are still worth offering, but a script that's
   // referenced and missing is worth flagging.
   if (script.path && !script.exists) {
     notify(`Script not found: ${script.path}`);
   }
 
-  // One list: the script's profiles in table order, then shortcut profiles
+  // One list: the script's profiles in table order, then game links
   // (each placed by its number override, or last, alphabetically).
   const entries = buildPromptEntries(scriptUsable ? script.profiles : [], links, config?.defaultName);
   const defaultKey = pickDefaultKey(entries, config);
@@ -292,7 +292,7 @@ async function handleLaunch(appId: string, knownGameId?: string) {
  */
 function launchLink(entry: LinkEntry) {
   if (!getOverview(entry.targetAppId)) {
-    notify(`Game not found for shortcut profile: ${entry.label}`);
+    notify(`Game not found for game link: ${entry.label}`);
     return;
   }
   runGame(getGameId(entry.targetAppId));
