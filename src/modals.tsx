@@ -247,17 +247,23 @@ function SgdbMatchModal({
 }
 
 /**
- * Title for a new Steam shortcut. Nothing is created until a ROM and profile are chosen.
+ * Title for a new Steam shortcut, asked for after its ROM and profile are chosen. Nothing is
+ * created until this is submitted.
  *
  * With "Apply SteamGridDB art" on there is also a SteamGridDB match field: it follows the title
  * with the closest match until the person picks one themselves. `onSubmit` gets the chosen game,
  * `null` for "no match", or `undefined` when the option is off or no match was decided.
  */
 export function NewGameModal({
+  initialName = "",
   onSubmit,
   closeModal,
-}: { onSubmit: (name: string, sgdb: SgdbGame | null | undefined) => void } & CloseProps) {
-  const [name, setName] = useState("");
+}: {
+  /** Title the field starts with (the SteamGridDB match follows it like any typed title). */
+  initialName?: string;
+  onSubmit: (name: string, sgdb: SgdbGame | null | undefined) => void;
+} & CloseProps) {
+  const [name, setName] = useState(initialName);
   const [sgdb, setSgdb] = useState<{ enabled: boolean; hasKey: boolean }>({ enabled: false, hasKey: false });
   const [match, setMatch] = useState<SgdbGame | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -360,7 +366,7 @@ export function NewGameModal({
               onSubmit(trimmed, choice);
             }}
           >
-            Continue
+            Add to Steam
           </DialogButton>
           <DialogButton onClick={() => closeModal?.()}>Cancel</DialogButton>
         </Focusable>
@@ -527,7 +533,8 @@ export function ProfilePickerModal({
   onPick,
   closeModal,
 }: {
-  gameName: string;
+  /** The game the ROM is for; unknown while a new game is still waiting to be named. */
+  gameName?: string;
   romName: string;
   profiles: Profile[];
   /** Set when several profiles claim the ROM's file type. */
@@ -539,7 +546,8 @@ export function ProfilePickerModal({
       <DialogHeader>Choose ROM Profile</DialogHeader>
       <DialogBody>
         <div style={{ marginBottom: "6px" }}>
-          <b>{romName}</b> for {gameName}
+          <b>{romName}</b>
+          {gameName && <> for {gameName}</>}
         </div>
         {conflict && (
           <div style={{ ...subStyle, fontSize: "0.85em", marginBottom: "10px" }}>

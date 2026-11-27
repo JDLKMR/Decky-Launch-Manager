@@ -7,6 +7,17 @@ export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export const basename = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 export const dirname = (p: string) => p.substring(0, p.lastIndexOf("/"));
 
+/**
+ * A game title guessed from a ROM path: the file name without its extension and without any
+ * trailing parenthesised tags (region, languages, revision, ...), e.g.
+ * "Some Game (USA) (En,Fr) (Rev 1).sfc" becomes "Some Game".
+ */
+export function titleFromRom(romPath: string): string {
+  const name = basename(romPath).replace(/\.[A-Za-z0-9]{1,5}$/, "").trim();
+  const title = name.replace(/(?:\s*\([^()]*\))+$/, "").trim();
+  return title || name;
+}
+
 function toArray(raw: any): any[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;

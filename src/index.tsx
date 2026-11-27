@@ -23,7 +23,6 @@ import {
   DirectoryBrowserModal,
   ExclusionsModal,
   GamePickerModal,
-  NewGameModal,
   ProfileEditorModal,
   subStyle,
 } from "./modals";
@@ -367,7 +366,7 @@ function Content() {
   /* ---- Add ROM: a new Steam game, or an existing non-Steam one --------- */
   // ROM profiles write a shortcut's Target / Start In / Launch Options, so only
   // non-Steam games can take one (the game page's action menu applies the same rule).
-  const startNewRom = () => showModal(<NewGameModal onSubmit={(name, sgdb) => startNewRomFlow(name, setS, sgdb)} />, window);
+  const startNewRom = () => startNewRomFlow(setS);
 
   const startExistingRom = () => {
     const games = getInstalledGames().filter((g) => g.kind === "shortcut");

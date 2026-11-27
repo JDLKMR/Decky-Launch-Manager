@@ -4,12 +4,13 @@ import {
   ActionMenuModal,
   ConfirmModal,
   FileBrowserModal,
+  NewGameModal,
   ProfilePickerModal,
   ScriptPickerModal,
   subStyle,
 } from "./modals";
 import { resolveProfile } from "./profiles";
-import { ART_LABELS, addToCollection, applyArtwork, applyProfile, applyScript, basename, clearGame, createShortcut } from "./steam";
+import { ART_LABELS, addToCollection, applyArtwork, applyProfile, applyScript, basename, clearGame, createShortcut, titleFromRom } from "./steam";
 import { gameProfile } from "./store";
 import { toast } from "./toast";
 import type { Game, Profile, Settings, SgdbGame } from "./types";
@@ -96,7 +97,8 @@ async function collectNewRom(game: Game, profile: Profile) {
 
 /**
  * A ROM chosen for a game that does not exist yet: the shortcut is created only
- * now (after the ROM and profile are settled), so cancelling earlier leaves nothing behind.
+ * now (after the ROM, profile, title and SteamGridDB match are settled), so cancelling
+ * earlier leaves nothing behind.
  */
 async function applyRomToNew(
   name: string,
@@ -124,7 +126,7 @@ async function applyRomToNew(
  * Choose ROM file -> (profile chosen automatically by file type, or picked by
  * hand) -> `apply`. Shared by the existing-game and new-game flows.
  */
-async function chooseRom(gameName: string, apply: (profile: Profile, romPath: string) => void) {
+async function chooseRom(gameName: string | undefined, apply: (profile: Profile, romPath: string) => void) {
   try {
     const s = await getSettings();
     if (s.profiles.length === 0) {
@@ -168,9 +170,20 @@ async function chooseRom(gameName: string, apply: (profile: Profile, romPath: st
 export const startRomFlow = (game: Game, onSettings?: OnSettings) =>
   chooseRom(game.name, (profile, romPath) => applyRom(game, profile, romPath, onSettings));
 
-/** ROM for a brand-new Steam shortcut with the given title. */
-export const startNewRomFlow = (name: string, onSettings?: OnSettings, sgdb?: SgdbChoice) =>
-  chooseRom(name, (profile, romPath) => applyRomToNew(name, profile, romPath, onSettings, sgdb));
+/**
+ * ROM for a brand-new Steam shortcut: the ROM file (and profile) is chosen first, then the
+ * New Game window asks for the title and SteamGridDB match, starting from the ROM's file name.
+ */
+export const startNewRomFlow = (onSettings?: OnSettings) =>
+  chooseRom(undefined, (profile, romPath) =>
+    showModal(
+      <NewGameModal
+        initialName={titleFromRom(romPath)}
+        onSubmit={(name, sgdb) => applyRomToNew(name, profile, romPath, onSettings, sgdb)}
+      />,
+      window,
+    ),
+  );
 
 /* ------------------------------------------------------------------ */
 /* Add script file                                                      */
